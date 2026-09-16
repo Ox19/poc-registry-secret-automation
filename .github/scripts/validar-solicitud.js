@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
 
 // Los dropdowns del formulario son solo UX: el issue se puede editar, así que el control son estas listas.
-const ALLOWED_VAULTS = ['azkvecsteu2d01', 'azkvpocdeveu2d01'];
+const ALLOWED_VAULTS = ['kv-poc-secretos-78e549'];
 const ALLOWED_ENVIRONMENTS = ['desarrollo', 'certificacion', 'produccion'];
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
