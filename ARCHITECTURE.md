@@ -87,8 +87,11 @@ filtrar — el ciclo de vida lo maneja Azure entero.
 **El subject de OIDC se lee de la API, no se escribe a mano.** GitHub firma el token con los IDs
 numéricos inmutables del dueño y del repo:
 `repo:Ox19@57415456/registry-secret-automation@1373060850:environment:registro-secretos`. Escribir
-el nombre pelado hace fallar el login con `AADSTS700213`. Atarlo al ID además es más seguro: el
-permiso sobrevive a un renombre y nadie lo hereda ocupando el nombre viejo.
+el nombre pelado hace fallar el login con `AADSTS700213`.
+
+El subject lleva **nombre e ID a la vez**, así que **renombrar el repo o la cuenta rompe el login**:
+hay que volver a correr `bootstrap.sh`, que lo relee de la API. Lo que el ID aporta es otra garantía:
+nadie puede crear después un repo con el nombre viejo y heredar el permiso, porque tendría otro ID.
 
 **El valor pasa por archivo, no por argumento.** `--value` dejaría el secreto en la línea de comandos,
 visible para cualquier proceso del runner con `ps`. Va por un archivo temporal con permisos `600` y
