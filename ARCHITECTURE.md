@@ -86,7 +86,7 @@ filtrar — el ciclo de vida lo maneja Azure entero.
 
 **El subject de OIDC se lee de la API, no se escribe a mano.** GitHub firma el token con los IDs
 numéricos inmutables del dueño y del repo:
-`repo:Ox19@57415456/registry-secret-automation@1373060850:environment:registro-secretos`. Escribir
+`repo:Ox19@57415456/poc-registry-secret-automation@1373060850:environment:registro-secretos`. Escribir
 el nombre pelado hace fallar el login con `AADSTS700213`.
 
 El subject lleva **nombre e ID a la vez**, así que **renombrar el repo o la cuenta rompe el login**:

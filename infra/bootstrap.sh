@@ -8,7 +8,7 @@ LOCATION="eastus"
 RESOURCE_GROUP="rg-poc-secretos"
 VAULT_NAME="kv-poc-secretos-78e549"          # 3-24 caracteres, único en todo Azure
 IDENTITY_NAME="id-github-registro-secretos"
-GITHUB_REPO="Ox19/registry-secret-automation"
+GITHUB_REPO="Ox19/poc-registry-secret-automation"
 GITHUB_ENVIRONMENT="registro-secretos"
 WRITER_ROLE_NAME="Key Vault Secret Writer (PoC)"
 
