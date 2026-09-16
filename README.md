@@ -25,7 +25,7 @@ ese step falla y el registro se cae. Es un control permanente.
 ## Cómo registrar un secreto
 
 **1.** Abrí un issue con la plantilla *Solicitud de registro de secreto*: nombre, Key Vault,
-ambiente, aplicación, dueño y expiración. **Nunca el valor.**
+repositorio que lo usa, expiración y justificación. **Nunca el valor.**
 
 **2.** El workflow valida la solicitud. Si algo está mal, comenta el motivo y cierra el issue: para
 corregir se abre otro, editar el existente no lo reprocesa.
@@ -77,6 +77,8 @@ otra función: el token OIDC solo se emite a un job que lo declare.
 
 - Solo secretos que un sistema puede generar por API. Los que entrega una persona o un proveedor sin
   API quedan fuera de alcance.
-- Los Key Vault y ambientes admitidos son listas dentro de `.github/scripts/validar-solicitud.js`.
-  El dropdown del formulario es comodidad: el control real es esa lista, porque el issue se puede editar.
+- Los Key Vault autorizados son una lista dentro de `.github/scripts/validar-solicitud.js`. El
+  formulario no los muestra: si se pide uno que no está, la solicitud se rechaza indicando el motivo.
+  Esa lista es el control real, porque el issue se puede editar después de abrirlo.
+- El ambiente no se pide: se desprende del nombre del Key Vault.
 - El alcance es el **registro**. Que las aplicaciones lean el secreto es otra fase.
