@@ -83,12 +83,13 @@ az role assignment create \
 
 cat <<RESUMEN
 
-Listo. Cargar estos valores como variables del repo en GitHub:
+Listo. Cargar estos valores en GitHub, en Settings > Environments > registro-secretos:
 
   AZURE_CLIENT_ID        $IDENTITY_CLIENT_ID
   AZURE_TENANT_ID        $(az account show --query tenantId --output tsv)
   AZURE_SUBSCRIPTION_ID  $SUBSCRIPTION_ID
   KEY_VAULT_NAME         $VAULT_NAME
 
-No son secretos: son identificadores. Sin el token firmado por GitHub no sirven para entrar.
+No son credenciales: son identificadores. Sin el token firmado por GitHub no sirven para entrar.
+En un repo público van como secrets del environment, para que no queden en claro en los logs.
 RESUMEN

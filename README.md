@@ -53,12 +53,15 @@ Del lado de GitHub hace falta:
 
 | Qué | Dónde |
 |---|---|
-| Variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Settings › Secrets and variables › Actions › Variables |
+| Secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Settings › Environments › `registro-secretos` › Environment secrets |
 | Labels `registro-secreto` y `registrado` | Issues › Labels |
 | Environment `registro-secretos`, limitado a `main` | Settings › Environments |
 
-Las tres variables son **identificadores, no secretos**: sin un token firmado por GitHub para este
-repo y este environment, no abren nada.
+Los tres valores son **identificadores, no credenciales**: sin un token firmado por GitHub para este
+repo y este environment, no abren nada. Van como secrets del environment por dos razones concretas:
+este repo es **público**, así que de otro modo quedarían en claro en los logs, y atados al environment
+solo los ve el job que ya pasó por la aprobación. En un repo privado corresponden **variables de
+environment**, que se leen igual pero son visibles para diagnosticar.
 
 ## Estado
 
