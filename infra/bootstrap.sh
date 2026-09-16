@@ -21,13 +21,15 @@ az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 echo "==> 2/7 Key Vault con RBAC"
 # El flag de purge protection se omite a propósito: Azure solo acepta activarlo, nunca ponerlo
 # en false, y activarlo es irreversible. Sin él, el lab se puede borrar y recrear.
-az keyvault create \
-    --name "$VAULT_NAME" \
-    --resource-group "$RESOURCE_GROUP" \
-    --location "$LOCATION" \
-    --enable-rbac-authorization true \
-    --retention-days 7 \
-    --output none
+if ! az keyvault show --name "$VAULT_NAME" --output none 2>/dev/null; then
+    az keyvault create \
+        --name "$VAULT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --location "$LOCATION" \
+        --enable-rbac-authorization true \
+        --retention-days 7 \
+        --output none
+fi
 VAULT_ID="$(az keyvault show --name "$VAULT_NAME" --query id --output tsv)"
 
 echo "==> 3/7 Identidad administrada para GitHub"
@@ -37,17 +39,18 @@ IDENTITY_PRINCIPAL_ID="$(az identity show --name "$IDENTITY_NAME" --resource-gro
 IDENTITY_CLIENT_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query clientId --output tsv)"
 
 echo "==> 4/7 Credencial federada: solo este repo y solo este environment"
-# El 'subject' es lo que GitHub firma en su token. Si no calza exacto, Azure rechaza el login.
-if ! az identity federated-credential show --name "github-$GITHUB_ENVIRONMENT" --identity-name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-    az identity federated-credential create \
-        --name "github-$GITHUB_ENVIRONMENT" \
-        --identity-name "$IDENTITY_NAME" \
-        --resource-group "$RESOURCE_GROUP" \
-        --issuer "https://token.actions.githubusercontent.com" \
-        --subject "repo:${GITHUB_REPO}:environment:${GITHUB_ENVIRONMENT}" \
-        --audiences "api://AzureADTokenExchange" \
-        --output none
-fi
+# El 'subject' es lo que GitHub firma en su token; si no calza exacto, Azure rechaza el login.
+# GitHub le anexa los IDs numéricos del dueño y del repo, así que se leen de su API en vez de
+# escribirlos a mano: atado al ID, el permiso sobrevive a un renombre y nadie hereda el nombre viejo.
+GITHUB_SUBJECT="$(gh api "repos/$GITHUB_REPO" --jq "\"repo:\(.owner.login)@\(.owner.id)/\(.name)@\(.id):environment:$GITHUB_ENVIRONMENT\"")"
+az identity federated-credential create \
+    --name "github-$GITHUB_ENVIRONMENT" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --issuer "https://token.actions.githubusercontent.com" \
+    --subject "$GITHUB_SUBJECT" \
+    --audiences "api://AzureADTokenExchange" \
+    --output none
 
 echo "==> 5/7 Rol a medida: escribir sí, leer no"
 # El rol integrado 'Key Vault Secrets Officer' también permite getSecret, así que el pipeline
