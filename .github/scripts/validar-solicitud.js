@@ -5,10 +5,11 @@
 const crypto = require('node:crypto');
 const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
 
-// Los dropdowns del formulario son solo UX: el issue se puede editar, así que el control son estas listas.
+// El formulario no muestra los vaults permitidos: el control es esta lista, y vale igual aunque editen el issue.
 const ALLOWED_VAULTS = ['kv-poc-secretos-78e549'];
-const ALLOWED_ENVIRONMENTS = ['desarrollo', 'certificacion', 'produccion'];
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+// Los repos admiten mayúsculas, puntos y guiones bajos: no sirve el patrón del nombre del secreto.
+const REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 // Date no falla con '2026-13-45' y corre '2027-02-31' a marzo: se exige que la fecha exista tal cual.
@@ -36,16 +37,14 @@ function validate(body) {
     const request = {
         name: readField(body, 'Nombre del secreto'),
         vault: readField(body, 'Key Vault destino'),
-        environment: readField(body, 'Ambiente'),
-        app: readField(body, 'Aplicación dueña'),
+        repository: readField(body, 'Repositorio que lo usa'),
         expiry: readField(body, 'Fecha de expiración'),
     };
     const errors = [];
 
     if (!NAME_PATTERN.test(request.name)) errors.push(`Nombre inválido: \`${request.name}\`. Solo minúsculas, números y guiones.`);
-    if (!ALLOWED_VAULTS.includes(request.vault)) errors.push(`Key Vault \`${request.vault}\` no está en la lista blanca.`);
-    if (!ALLOWED_ENVIRONMENTS.includes(request.environment)) errors.push(`Ambiente inválido: \`${request.environment}\`.`);
-    if (!NAME_PATTERN.test(request.app)) errors.push(`Aplicación inválida: \`${request.app}\`. Solo minúsculas, números y guiones.`);
+    if (!ALLOWED_VAULTS.includes(request.vault)) errors.push(`Key Vault \`${request.vault}\` no está autorizado.`);
+    if (!REPO_PATTERN.test(request.repository)) errors.push(`Repositorio inválido: \`${request.repository}\`.`);
     if (!isRealDate(request.expiry)) errors.push(`Fecha de expiración inválida: \`${request.expiry}\`. Formato AAAA-MM-DD y fecha existente.`);
     else if (new Date(request.expiry) <= new Date()) errors.push(`La fecha de expiración \`${request.expiry}\` ya pasó.`);
 
@@ -56,8 +55,8 @@ function validate(body) {
 }
 
 function render({ request, errors }, runLink) {
-    const rows = [['Nombre', request.name], ['Key Vault', request.vault], ['Ambiente', request.environment],
-                  ['Aplicación', request.app], ['Expira', request.expiry]];
+    const rows = [['Nombre', request.name], ['Key Vault', request.vault],
+                  ['Repositorio', request.repository], ['Expira', request.expiry]];
     return [
         errors.length ? '### ❌ Solicitud rechazada' : '### ✅ Solicitud válida', '',
         '| Campo | Valor |', '|---|---|',
