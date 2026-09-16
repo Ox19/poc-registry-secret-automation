@@ -20,7 +20,7 @@ module.exports = async ({ github, context }) => {
     const approver = reviews.find((review) => review.state === 'approved')?.user.login;
 
     await github.rest.issues.createComment({ ...issue, body: [
-        '### ✅ Secreto registrado (simulado en la PoC)', '',
+        '### ✅ Secreto registrado en Azure Key Vault', '',
         '| Campo | Valor |', '|---|---|',
         `| Nombre | \`${SECRET_NAME}\` |`, `| Key Vault | \`${VAULT}\` |`, `| Expira | \`${EXPIRY}\` |`,
         `| Aprobado por | ${approver ? `@${approver}` : 'no identificado'} |`, '',
