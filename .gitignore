@@ -1,0 +1,11 @@
+# Material criptográfico: nunca se versiona, ni siquiera una clave pública.
+*.pem
+*.key
+*.p12
+*.pfx
+*.enc
+
+# Artefactos de pruebas
+evidencia/
+*.b64
+node_modules/
