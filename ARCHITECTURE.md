@@ -1,7 +1,8 @@
 # Arquitectura
 
-Registra secretos en Azure Key Vault sin que ninguna persona teclee, cifre ni vea el valor. El
-workflow lo **genera** en el runner y lo escribe en la bóveda con identidad federada.
+El valor va **directo de su origen a la bóveda, en un solo salto**, y quien lo escribe no puede
+leerlo después. Es un solo flujo con dos ejecutores posibles en el paso de escritura: `github[bot]`
+cuando el valor lo emite una API, o la persona que lo recibió cuando lo entrega un proveedor.
 
 El control que esto resuelve es de **segregación de funciones**: quien pide el secreto no lo maneja,
 quien aprueba no lo ve, y nadie necesita el portal de Azure para registrarlo.
@@ -13,12 +14,14 @@ quien aprueba no lo ve, y nadie necesita el portal de Azure para registrarlo.
 ├── ISSUE_TEMPLATE/
 │   └── registro-secreto.yml      # formulario de solicitud — sin campo para el valor
 ├── workflows/
-│   └── registrar-secreto.yml     # validate → register (Azure) → report
+│   ├── registrar-secreto.yml     # validate → register (Azure) → report
+│   └── conciliar-boveda.yml      # compara la bóveda contra los pedidos aprobados
 └── scripts/
-    ├── common.js                 # patrón del canario, label y referencias compartidas
-    ├── validar-solicitud.js      # check al abrir, recheck justo antes de generar
+    ├── common.js                 # patrón del canario, labels y referencias compartidas
+    ├── validar-solicitud.js      # check al abrir, recheck justo antes de escribir
     ├── generar-secreto.js        # genera el valor en el runner
-    └── reportar-registro.js      # resultado, aprobador real y cierre
+    ├── reportar-registro.js      # resultado, aprobador real y cierre
+    └── conciliar-boveda.js       # detecta secretos sin pedido y cierra los ya cargados
 infra/
 └── bootstrap.sh                  # todo lo de Azure, idempotente
 ```
@@ -68,9 +71,17 @@ hilo, así la trazabilidad se lee de corrido.
 
 ## Decisiones de diseño
 
-**Nadie teclea el valor: lo genera el sistema.** Cualquier paso donde una persona escribe o pega el
-valor abre un canal de fuga y rompe la segregación. Generarlo en el runner elimina ese tramo. Solo
-aplica a secretos que un sistema puede emitir por API; el resto queda fuera de alcance.
+**Un solo flujo, dos ejecutores.** Los secretos que entrega un proveedor —Salesforce, un banco, un
+partner— no se pueden generar: cuando llegan, una persona ya los vio. Pretender que nadie los vea es
+una promesa imposible, y dejarlos fuera de alcance dejaba afuera la mayor parte del problema real.
+
+Lo que sí se puede garantizar en los dos casos es **el salto único**: el valor va de su origen a la
+bóveda sin escalas, y quien lo escribe no puede releerlo. Por eso el flujo es uno y lo que cambia es
+solo quién ejecuta la escritura. El formulario declara el origen y el workflow decide el camino.
+
+**Las personas que cargan valores usan el mismo rol que `github[bot]`.** No son dos mecanismos
+parecidos: es la misma definición de rol, asignada a un grupo de Entra ID. Eso es lo que permite
+afirmar sin excepciones que quien escribe en la bóveda no puede leerla.
 
 **El rol permite escribir, no leer.** Los roles integrados de Key Vault no sirven: *Secrets User*
 solo lee y *Secrets Officer* hace todo, incluido `getSecret`. Con el integrado, el pipeline podría
@@ -128,18 +139,32 @@ no. Estas acciones corren en el mismo job que genera el valor.
 **Permisos mínimos por job.** `permissions: {}` a nivel global. `register`, el único job que tiene el
 valor, no puede escribir en el issue; su `id-token: write` sirve solo para pedir el token de Azure.
 
+**La conciliación tiene su propia identidad, sin permiso de escritura.** Corre sola, sin aprobación
+humana — si no, cada corrida quedaría esperando que alguien la apruebe y el control no existiría. Por
+eso no puede compartir identidad con el registro: si pudiera escribir, alguien podría registrar un
+secreto por esa vía saltándose la aprobación. Su rol tiene una sola acción, `readMetadata`, que
+permite listar nombres y **no** ver valores.
+
+**El control es preventivo o detectivo según quién escriba.** Con `github[bot]` la aprobación es
+imposible de saltear: sin ella no obtiene el token de Azure. Con una persona no, porque tiene el
+permiso de forma permanente. Ahí el control es la conciliación: detecta después lo que no pudo
+impedir antes. Es menos, y conviene decirlo, pero es mucho más que no tener ni pedido ni registro.
+
 ## Estado
 
-Funciona contra un Azure real: login federado, registro efectivo, lectura denegada y cero
-apariciones del valor en logs y en el issue.
+Funciona contra un Azure real: login federado, escritura efectiva, lectura denegada, conciliación que
+detecta secretos sin pedido, y cero apariciones del valor en logs y en el issue.
 
-Falta **la pausa de aprobación**: los revisores obligatorios en un repo privado requieren GitHub Pro.
-Hasta entonces el job de registro corre sin detenerse. El valor registrado es un canario con formato
-reconocible, no una credencial real.
+Falta el **grupo de custodios**: el tenant de la universidad no permite crear grupos de Entra ID, así
+que la carga a mano está diseñada y documentada pero no probada con un grupo real. El permiso que
+usaría es el mismo que ya está probado con `github[bot]`.
+
+El valor que se registra es un canario con formato reconocible, no una credencial real.
 
 ## Fuera de alcance
 
-- Secretos sin API para generarse: llaves de GitHub App, credenciales on-prem, proveedores externos.
+- Detección inmediata de cargas fuera del flujo: la conciliación corre por horario, no por evento.
+  Con Event Grid sobre el Key Vault sería inmediata; acá se eligió lo simple para la PoC.
 - La **lectura** de secretos por las aplicaciones: es otra fase.
 - Vencimiento y rotación: los secretos se registran **sin fecha de expiración**, siguiendo la
   práctica actual de la compañía. `az keyvault secret set` acepta `--expires` y el flujo lo

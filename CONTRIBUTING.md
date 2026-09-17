@@ -11,8 +11,10 @@ las decisiones de diseño.
 
 ## Reglas que no se negocian
 
-- **Nadie teclea, pega ni cifra el valor**: lo genera `generar-secreto.js` en el runner. No agregar
-  inputs, comentarios ni campos que lo reciban.
+- **El valor nunca entra por el repo.** Ni por un campo del formulario, ni por un comentario, ni por
+  un input del workflow. O lo escribe `github[bot]`, o lo carga una persona directo en la bóveda.
+- **La identidad que concilia no recibe permiso de escritura.** Corre sin aprobación humana: si
+  pudiera escribir, sería una forma de registrar secretos saltándose al Analista.
 - **El valor nunca va como argumento de `az`**: `--value` lo dejaría visible con `ps`. Va por archivo
   temporal con permisos `600` y `trap` que lo borra.
 - **El valor nunca va a `GITHUB_ENV`**: vive solo en el step que lo genera.
@@ -39,6 +41,7 @@ flowchart LR
     C[Cómo se genera el valor] --> G["scripts/generar-secreto.js"]
     D[Nuevo campo del formulario] --> I["ISSUE_TEMPLATE/registro-secreto.yml"]
     E[Algo que se crea en Azure] --> B2["infra/bootstrap.sh"]
+    F[Cómo se detectan cargas sin pedido] --> C2["scripts/conciliar-boveda.js"]
 ```
 
 La lógica vive en `scripts/`, no embebida en el YAML: así queda en el diff y se puede probar aparte.
