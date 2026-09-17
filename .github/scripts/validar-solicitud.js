@@ -8,6 +8,9 @@ const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
 // El formulario no muestra los vaults permitidos: el control es esta lista, y vale igual aunque editen el issue.
 const ALLOWED_VAULTS = ['kv-poc-secretos-78e549'];
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+// Define quién escribe en la bóveda: github[bot] o la persona que recibió el valor.
+const GENERATED = 'Lo genera un sistema';
+const ALLOWED_ORIGINS = [GENERATED, 'Lo entrega un proveedor'];
 
 // Guardarraíl: secretos pegados en claro por error.
 const LEAK_PATTERNS = [
@@ -28,11 +31,13 @@ function validate(body) {
     const request = {
         name: readField(body, 'Nombre del secreto'),
         vault: readField(body, 'Key Vault destino'),
+        origin: readField(body, 'De dónde viene el valor'),
     };
     const errors = [];
 
     if (!NAME_PATTERN.test(request.name)) errors.push(`Nombre inválido: \`${request.name}\`. Solo minúsculas, números y guiones.`);
     if (!ALLOWED_VAULTS.includes(request.vault)) errors.push(`Key Vault \`${request.vault}\` no está autorizado.`);
+    if (!ALLOWED_ORIGINS.includes(request.origin)) errors.push(`Origen del valor inválido: \`${request.origin}\`.`);
 
     for (const [pattern, kind] of LEAK_PATTERNS) {
         if (pattern.test(body)) errors.push(`🚨 **Parece un ${kind} EN CLARO.** Rotalo ya: quedó en el historial del issue.`);
@@ -41,7 +46,7 @@ function validate(body) {
 }
 
 function render({ request, errors }, runLink) {
-    const rows = [['Nombre', request.name], ['Key Vault', request.vault]];
+    const rows = [['Nombre', request.name], ['Key Vault', request.vault], ['Origen del valor', request.origin]];
     return [
         errors.length ? '### ❌ Solicitud rechazada' : '### ✅ Solicitud válida', '',
         '| Campo | Valor |', '|---|---|',
@@ -88,6 +93,8 @@ async function recheck({ github, context, core }) {
     const { request, errors } = validate(body);
     if (errors.length) return core.setFailed(`La solicitud dejó de ser válida: ${errors.join(' ')}`);
     for (const key of ['name', 'vault']) core.setOutput(key, request[key]);
+    // El workflow decide con esto si genera el valor o si solo avisa que ya se puede cargar.
+    core.setOutput('generated', String(request.origin === GENERATED));
 }
 
 module.exports = { check, recheck };
