@@ -7,6 +7,9 @@ const CANARY_PATTERN = /^POC-CANARY-[0-9a-f]+-NO-ES-UN-SECRETO-REAL$/;
 // Marca del issue ya registrado: impide generar dos veces para la misma solicitud.
 const REGISTERED_LABEL = 'registrado';
 
+// El valor lo entrega un proveedor: está aprobado, pero falta que una persona lo cargue.
+const PENDING_LABEL = 'pendiente-carga';
+
 const issueRef = ({ repo, issue }) => ({ owner: repo.owner, repo: repo.repo, issue_number: issue.number });
 const runUrl = ({ serverUrl, repo, runId }) => `${serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${runId}`;
 
@@ -15,4 +18,4 @@ function fail(message) {
     process.exit(1);
 }
 
-module.exports = { fail, CANARY_PATTERN, REGISTERED_LABEL, issueRef, runUrl };
+module.exports = { fail, CANARY_PATTERN, REGISTERED_LABEL, PENDING_LABEL, issueRef, runUrl };
