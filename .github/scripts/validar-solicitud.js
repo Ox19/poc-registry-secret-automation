@@ -53,7 +53,10 @@ function render({ request, errors }, runLink) {
         ...rows.map(([label, value]) => `| ${label} | \`${value}\` |`), '',
         ...(errors.length
             ? ['**Problemas encontrados:**', '', ...errors.map((e) => `- ${e}`), '', 'La solicitud se cerró: para corregirla, abrí otra.']
-            : [`Queda esperando la **aprobación de Seguridad** en el [run](${runLink}). Al aprobarse, el sistema genera el valor: nadie lo ve.`]),
+            : [`Queda esperando la **aprobación de Seguridad** en el [run](${runLink}).`, '',
+               request.origin === GENERATED
+                   ? 'Al aprobarse, el sistema pide el valor y lo registra: nadie lo ve.'
+                   : 'Al aprobarse, se te avisa para que cargues vos el valor en el Key Vault. No lo pegues acá.']),
     ].join('\n');
 }
 
