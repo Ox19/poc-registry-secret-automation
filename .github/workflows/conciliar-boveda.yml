@@ -12,7 +12,9 @@ permissions: {}
 jobs:
   conciliar:
     name: Conciliar
-    environment: registro-secretos   # el mismo environment: es de donde sale la identidad
+    # Environment propio, sin aprobación: esta identidad solo puede listar nombres, no escribir.
+    # Si usara el de registro, cada conciliación quedaría esperando que alguien la apruebe.
+    environment: conciliacion
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

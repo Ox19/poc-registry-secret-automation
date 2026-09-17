@@ -11,6 +11,9 @@ IDENTITY_NAME="id-github-registro-secretos"
 GITHUB_REPO="Ox19/poc-registry-secret-automation"
 GITHUB_ENVIRONMENT="registro-secretos"
 WRITER_ROLE_NAME="Key Vault Secret Writer (PoC)"
+READER_ROLE_NAME="Key Vault Metadata Reader (PoC)"
+AUDIT_IDENTITY_NAME="id-github-conciliacion"
+AUDIT_ENVIRONMENT="conciliacion"
 
 SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
 CURRENT_USER_ID="$(az ad signed-in-user show --query id --output tsv)"
@@ -55,32 +58,52 @@ az identity federated-credential create \
 echo "==> 5/7 Rol a medida: escribir sí, leer no"
 # El rol integrado 'Key Vault Secrets Officer' también permite getSecret, así que el pipeline
 # podría releer lo que acaba de escribir. Este rol tiene dos acciones y ninguna más:
-#   setSecret     escribir el valor
-#   readMetadata  listar qué secretos hay, SIN ver ninguno. Lo usa la conciliación para comparar
-#                 la bóveda contra los pedidos aprobados.
-role_definition() {
-    # $1 trae el identificador interno al actualizar, y va vacío al crear.
-    cat <<JSON
-{
-    $1
-    "roleName": "$WRITER_ROLE_NAME",
-    "description": "Escribe secretos en Key Vault y lista sus nombres, sin poder leer valores.",
+# Una sola acción: escribir. Listar y auditar es tarea de otra identidad, con otro rol.
+writer_body='"description": "Escribe secretos en Key Vault sin poder leerlos.",
     "actions": [],
-    "dataActions": [
-        "Microsoft.KeyVault/vaults/secrets/setSecret/action",
-        "Microsoft.KeyVault/vaults/secrets/readMetadata/action"
-    ],
-    "assignableScopes": ["/subscriptions/$SUBSCRIPTION_ID"]
-}
-JSON
-}
+    "dataActions": ["Microsoft.KeyVault/vaults/secrets/setSecret/action"],
+    "assignableScopes": ["/subscriptions/'"$SUBSCRIPTION_ID"'"]'
 
 ROLE_ID="$(az role definition list --name "$WRITER_ROLE_NAME" --query "[0].name" --output tsv)"
 if [[ -z "$ROLE_ID" ]]; then
-    az role definition create --role-definition "$(role_definition)" --output none
+    az role definition create --role-definition "{\"Name\": \"$WRITER_ROLE_NAME\", $writer_body}" --output none
 else
-    az role definition update --role-definition "$(role_definition "\"name\": \"$ROLE_ID\",")" --output none
+    az role definition update --role-definition "{\"name\": \"$ROLE_ID\", \"roleName\": \"$WRITER_ROLE_NAME\", $writer_body}" --output none
 fi
+
+echo "==> 5b/7 Identidad que concilia: lista nombres y no escribe nada"
+# Corre sin aprobación humana, así que no puede tener permiso de escritura: si lo tuviera, alguien
+# podría registrar un secreto por esta vía saltándose la aprobación del environment principal.
+reader_body='"description": "Lista los secretos de Key Vault. No puede escribir ni ver valores.",
+    "actions": [],
+    "dataActions": ["Microsoft.KeyVault/vaults/secrets/readMetadata/action"],
+    "assignableScopes": ["/subscriptions/'"$SUBSCRIPTION_ID"'"]'
+
+READER_ID="$(az role definition list --name "$READER_ROLE_NAME" --query "[0].name" --output tsv)"
+if [[ -z "$READER_ID" ]]; then
+    az role definition create --role-definition "{\"Name\": \"$READER_ROLE_NAME\", $reader_body}" --output none
+else
+    az role definition update --role-definition "{\"name\": \"$READER_ID\", \"roleName\": \"$READER_ROLE_NAME\", $reader_body}" --output none
+fi
+
+az identity create --name "$AUDIT_IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --output none
+AUDIT_PRINCIPAL_ID="$(az identity show --name "$AUDIT_IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query principalId --output tsv)"
+AUDIT_CLIENT_ID="$(az identity show --name "$AUDIT_IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query clientId --output tsv)"
+AUDIT_SUBJECT="$(gh api "repos/$GITHUB_REPO" --jq "\"repo:\(.owner.login)@\(.owner.id)/\(.name)@\(.id):environment:$AUDIT_ENVIRONMENT\"")"
+az identity federated-credential create \
+    --name "github-$AUDIT_ENVIRONMENT" \
+    --identity-name "$AUDIT_IDENTITY_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --issuer "https://token.actions.githubusercontent.com" \
+    --subject "$AUDIT_SUBJECT" \
+    --audiences "api://AzureADTokenExchange" \
+    --output none
+az role assignment create \
+    --assignee-object-id "$AUDIT_PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "$READER_ROLE_NAME" \
+    --scope "$VAULT_ID" \
+    --output none
 
 echo "==> 6/7 Asignar ese rol a la identidad, solo sobre esta bóveda"
 az role assignment create \
@@ -113,10 +136,16 @@ cat <<RESUMEN
 
 Listo. Cargar estos valores en GitHub, en Settings > Environments > registro-secretos:
 
+Environment "registro-secretos"  (con aprobación de Seguridad):
   AZURE_CLIENT_ID        $IDENTITY_CLIENT_ID
   AZURE_TENANT_ID        $(az account show --query tenantId --output tsv)
   AZURE_SUBSCRIPTION_ID  $SUBSCRIPTION_ID
   KEY_VAULT_NAME         $VAULT_NAME
+
+Environment "$AUDIT_ENVIRONMENT"  (sin aprobación: solo lista nombres, no escribe):
+  AZURE_CLIENT_ID        $AUDIT_CLIENT_ID
+  AZURE_TENANT_ID        $(az account show --query tenantId --output tsv)
+  AZURE_SUBSCRIPTION_ID  $SUBSCRIPTION_ID
 
 No son credenciales: son identificadores. Sin el token firmado por GitHub no sirven para entrar.
 En un repo público van como secrets del environment, para que no queden en claro en los logs.
