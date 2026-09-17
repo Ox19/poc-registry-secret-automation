@@ -14,7 +14,7 @@ pipeline que lo creó. La identidad de GitHub tiene un rol con **una sola acció
 que el último paso del registro es este:
 
 ```
-Registrado: poc-lab-azure-01 en kv-poc-secretos-78e549, expira 2027-03-09.
+Registrado: ms-cobranzas-sonarqube-token en kv-poc-secretos-78e549.
 Azure denegó la lectura, como corresponde:
 ERROR: (Forbidden) Caller is not authorized to perform action on resource.
 ```
@@ -25,7 +25,7 @@ ese step falla y el registro se cae. Es un control permanente.
 ## Cómo registrar un secreto
 
 **1.** Abrí un issue con la plantilla *Solicitud de registro de secreto*: nombre, Key Vault,
-repositorio que lo usa, expiración y justificación. **Nunca el valor.**
+y para qué lo necesita. **Nunca el valor.**
 
 **2.** El workflow valida la solicitud. Si algo está mal, comenta el motivo y cierra el issue: para
 corregir se abre otro, editar el existente no lo reprocesa.
@@ -33,7 +33,7 @@ corregir se abre otro, editar el existente no lo reprocesa.
 **3.** Seguridad aprueba en el environment `registro-secretos`. Antes de generar nada, el workflow
 verifica que el issue no haya cambiado desde que se validó.
 
-**4.** El sistema genera el valor, lo escribe en el Key Vault con expiración obligatoria, comenta
+**4.** El sistema genera el valor, lo escribe en el Key Vault, comenta
 quién aprobó y cierra el issue con el label `registrado`.
 
 ## Montar el entorno
@@ -68,7 +68,7 @@ environment**, que se leen igual pero son visibles para diagnosticar.
 | Pieza | Estado |
 |---|---|
 | Login OIDC sin secretos guardados | funciona |
-| Registro real en Key Vault con expiración | funciona |
+| Registro real en Key Vault | funciona |
 | El pipeline no puede releer lo que escribe | verificado (`Forbidden`) |
 | El valor no aparece en logs ni en el issue | verificado, 0 apariciones |
 | **Pausa para que Seguridad apruebe** | **pendiente** — los revisores obligatorios en repo privado requieren GitHub Pro |
@@ -84,4 +84,7 @@ otra función: el token OIDC solo se emite a un job que lo declare.
   formulario no los muestra: si se pide uno que no está, la solicitud se rechaza indicando el motivo.
   Esa lista es el control real, porque el issue se puede editar después de abrirlo.
 - El ambiente no se pide: se desprende del nombre del Key Vault.
+- **Los secretos se registran sin fecha de vencimiento**, siguiendo la práctica actual de la
+  compañía. Es una decisión tomada, no un olvido: el flujo soporta ponerla con una línea
+  (`--expires`), y conviene revisarla cuando se defina una política de rotación.
 - El alcance es el **registro**. Que las aplicaciones lean el secreto es otra fase.

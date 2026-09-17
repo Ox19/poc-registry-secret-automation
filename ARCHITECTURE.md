@@ -57,7 +57,7 @@ sequenceDiagram
     Analista->>R: aprueba en el environment
     R->>Issue: relee: mismo hash, abierto, sin registrar
     R->>R: genera el valor en memoria
-    R->>KV: az keyvault secret set (con expiración)
+    R->>KV: az keyvault secret set
     R->>KV: intenta leerlo de vuelta
     KV--)R: 403 Forbidden
     Rep->>Issue: resultado + aprobador · label registrado · cierra
@@ -130,7 +130,7 @@ valor, no puede escribir en el issue; su `id-token: write` sirve solo para pedir
 
 ## Estado
 
-Funciona contra un Azure real: login federado, registro con expiración, lectura denegada y cero
+Funciona contra un Azure real: login federado, registro efectivo, lectura denegada y cero
 apariciones del valor en logs y en el issue.
 
 Falta **la pausa de aprobación**: los revisores obligatorios en un repo privado requieren GitHub Pro.
@@ -141,5 +141,7 @@ reconocible, no una credencial real.
 
 - Secretos sin API para generarse: llaves de GitHub App, credenciales on-prem, proveedores externos.
 - La **lectura** de secretos por las aplicaciones: es otra fase.
-- Rotación y expiración automática: acá la fecha se declara, no se hace cumplir.
+- Vencimiento y rotación: los secretos se registran **sin fecha de expiración**, siguiendo la
+  práctica actual de la compañía. `az keyvault secret set` acepta `--expires` y el flujo lo
+  soportaba, así que volver a activarlo es una línea el día que exista una política de rotación.
 - Dependencias npm: los scripts usan solo módulos nativos de Node.
