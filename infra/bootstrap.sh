@@ -54,15 +54,32 @@ az identity federated-credential create \
 
 echo "==> 5/7 Rol a medida: escribir sí, leer no"
 # El rol integrado 'Key Vault Secrets Officer' también permite getSecret, así que el pipeline
-# podría releer lo que acaba de escribir. Este rol tiene una sola acción y cierra ese hueco.
-if [[ -z "$(az role definition list --name "$WRITER_ROLE_NAME" --query "[].name" --output tsv)" ]]; then
-    az role definition create --role-definition "{
-        \"Name\": \"$WRITER_ROLE_NAME\",
-        \"Description\": \"Escribe secretos en Key Vault sin poder leerlos.\",
-        \"Actions\": [],
-        \"DataActions\": [\"Microsoft.KeyVault/vaults/secrets/setSecret/action\"],
-        \"AssignableScopes\": [\"/subscriptions/$SUBSCRIPTION_ID\"]
-    }" --output none
+# podría releer lo que acaba de escribir. Este rol tiene dos acciones y ninguna más:
+#   setSecret     escribir el valor
+#   readMetadata  listar qué secretos hay, SIN ver ninguno. Lo usa la conciliación para comparar
+#                 la bóveda contra los pedidos aprobados.
+role_definition() {
+    # $1 trae el identificador interno al actualizar, y va vacío al crear.
+    cat <<JSON
+{
+    $1
+    "roleName": "$WRITER_ROLE_NAME",
+    "description": "Escribe secretos en Key Vault y lista sus nombres, sin poder leer valores.",
+    "actions": [],
+    "dataActions": [
+        "Microsoft.KeyVault/vaults/secrets/setSecret/action",
+        "Microsoft.KeyVault/vaults/secrets/readMetadata/action"
+    ],
+    "assignableScopes": ["/subscriptions/$SUBSCRIPTION_ID"]
+}
+JSON
+}
+
+ROLE_ID="$(az role definition list --name "$WRITER_ROLE_NAME" --query "[0].name" --output tsv)"
+if [[ -z "$ROLE_ID" ]]; then
+    az role definition create --role-definition "$(role_definition)" --output none
+else
+    az role definition update --role-definition "$(role_definition "\"name\": \"$ROLE_ID\",")" --output none
 fi
 
 echo "==> 6/7 Asignar ese rol a la identidad, solo sobre esta bóveda"
@@ -80,6 +97,17 @@ az role assignment create \
     --role "Key Vault Secrets Officer" \
     --scope "$VAULT_ID" \
     --output none
+
+# En el tenant de la UPC los alumnos no pueden crear grupos (allowedToCreateSecurityGroups: false),
+# así que este paso queda documentado y no se ejecuta. En una organización con permisos sería:
+#
+#   az ad group create --display-name "custodios-secretos-kv" --mail-nickname "custodios-secretos-kv"
+#   az role assignment create \
+#       --assignee-object-id "<id del grupo>" --assignee-principal-type Group \
+#       --role "$WRITER_ROLE_NAME" --scope "$VAULT_ID"
+#
+# Quien esté en ese grupo puede cargar valores a mano y NO puede leer ninguno: el mismo permiso
+# que la identidad de GitHub. Es lo que hace que el flujo sea uno solo.
 
 cat <<RESUMEN
 
