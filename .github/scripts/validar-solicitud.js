@@ -8,15 +8,6 @@ const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
 // El formulario no muestra los vaults permitidos: el control es esta lista, y vale igual aunque editen el issue.
 const ALLOWED_VAULTS = ['kv-poc-secretos-78e549'];
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-// Los repos admiten mayúsculas, puntos y guiones bajos: no sirve el patrón del nombre del secreto.
-const REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
-// Date no falla con '2026-13-45' y corre '2027-02-31' a marzo: se exige que la fecha exista tal cual.
-function isRealDate(text) {
-    const time = Date.parse(text);
-    return DATE_PATTERN.test(text) && !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === text;
-}
 
 // Guardarraíl: secretos pegados en claro por error.
 const LEAK_PATTERNS = [
@@ -37,16 +28,11 @@ function validate(body) {
     const request = {
         name: readField(body, 'Nombre del secreto'),
         vault: readField(body, 'Key Vault destino'),
-        repository: readField(body, 'Repositorio que lo usa'),
-        expiry: readField(body, 'Fecha de expiración'),
     };
     const errors = [];
 
     if (!NAME_PATTERN.test(request.name)) errors.push(`Nombre inválido: \`${request.name}\`. Solo minúsculas, números y guiones.`);
     if (!ALLOWED_VAULTS.includes(request.vault)) errors.push(`Key Vault \`${request.vault}\` no está autorizado.`);
-    if (!REPO_PATTERN.test(request.repository)) errors.push(`Repositorio inválido: \`${request.repository}\`.`);
-    if (!isRealDate(request.expiry)) errors.push(`Fecha de expiración inválida: \`${request.expiry}\`. Formato AAAA-MM-DD y fecha existente.`);
-    else if (new Date(request.expiry) <= new Date()) errors.push(`La fecha de expiración \`${request.expiry}\` ya pasó.`);
 
     for (const [pattern, kind] of LEAK_PATTERNS) {
         if (pattern.test(body)) errors.push(`🚨 **Parece un ${kind} EN CLARO.** Rotalo ya: quedó en el historial del issue.`);
@@ -55,8 +41,7 @@ function validate(body) {
 }
 
 function render({ request, errors }, runLink) {
-    const rows = [['Nombre', request.name], ['Key Vault', request.vault],
-                  ['Repositorio', request.repository], ['Expira', request.expiry]];
+    const rows = [['Nombre', request.name], ['Key Vault', request.vault]];
     return [
         errors.length ? '### ❌ Solicitud rechazada' : '### ✅ Solicitud válida', '',
         '| Campo | Valor |', '|---|---|',
@@ -102,7 +87,7 @@ async function recheck({ github, context, core }) {
 
     const { request, errors } = validate(body);
     if (errors.length) return core.setFailed(`La solicitud dejó de ser válida: ${errors.join(' ')}`);
-    for (const key of ['name', 'vault', 'expiry']) core.setOutput(key, request[key]);
+    for (const key of ['name', 'vault']) core.setOutput(key, request[key]);
 }
 
 module.exports = { check, recheck };

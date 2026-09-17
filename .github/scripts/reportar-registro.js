@@ -5,7 +5,7 @@
 const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
 
 module.exports = async ({ github, context }) => {
-    const { REGISTER_RESULT, SECRET_NAME, VAULT, EXPIRY } = process.env;
+    const { REGISTER_RESULT, SECRET_NAME, VAULT } = process.env;
     const issue = issueRef(context);
 
     if (REGISTER_RESULT !== 'success') {
@@ -22,7 +22,7 @@ module.exports = async ({ github, context }) => {
     await github.rest.issues.createComment({ ...issue, body: [
         '### ✅ Secreto registrado en Azure Key Vault', '',
         '| Campo | Valor |', '|---|---|',
-        `| Nombre | \`${SECRET_NAME}\` |`, `| Key Vault | \`${VAULT}\` |`, `| Expira | \`${EXPIRY}\` |`,
+        `| Nombre | \`${SECRET_NAME}\` |`, `| Key Vault | \`${VAULT}\` |`,
         `| Aprobado por | ${approver ? `@${approver}` : 'no identificado'} |`, '',
         `El valor lo generó el sistema y nadie lo vio. Run: ${runUrl(context)}`,
     ].join('\n') });
