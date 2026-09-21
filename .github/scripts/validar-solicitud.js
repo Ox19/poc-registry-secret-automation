@@ -1,18 +1,14 @@
-// Valida la solicitud, nunca el valor: `check` al abrir el issue y `recheck` justo antes de generar.
-// Lo invoca actions/github-script, que inyecta github, context y core.
+// Valida el pedido, nunca el valor: `check` al abrir o editar el issue, `reportPrecheck` con lo que vio
+// Azure antes de pedir la aprobación, y `recheck` justo antes de escribir en el KV.
 'use strict';
 
 const crypto = require('node:crypto');
-const { REGISTERED_LABEL, issueRef, runUrl } = require('./common');
+const {
+    LABELS, SECRET_NAME_PATTERN, SECRET_NAME_MAX, githubSecretName, issueRef, repoUrl, loginList, mentions,
+    readRequest, vaultEnvironment, updateStages, removeLabel,
+} = require('./common');
 
-// El formulario no muestra los vaults permitidos: el control es esta lista, y vale igual aunque editen el issue.
-const ALLOWED_VAULTS = ['kv-poc-secretos-78e549'];
-const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-// Define quién escribe en la bóveda: github[bot] o la persona que recibió el valor.
-const GENERATED = 'Lo genera un sistema';
-const ALLOWED_ORIGINS = [GENERATED, 'Lo entrega un proveedor'];
-
-// Guardarraíl: secretos pegados en claro por error.
+// Guardarraíl: el valor de un secreto pegado en el texto por error.
 const LEAK_PATTERNS = [
     [/gh[pousr]_[A-Za-z0-9]{16,}/, 'token de GitHub'],
     [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, 'clave privada'],
@@ -21,83 +17,123 @@ const LEAK_PATTERNS = [
     [/eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\./, 'JWT'],
 ];
 
-// Los Issue Forms rinden cada campo como '### Etiqueta' + valor.
-function readField(body, label) {
-    const match = body.match(new RegExp(`### ${label}\\s*\\n+([^\\n]+)`, 'i'));
-    return match ? match[1].trim() : '';
-}
-
-function validate(body) {
-    const request = {
-        name: readField(body, 'Nombre del secreto'),
-        vault: readField(body, 'Key Vault destino'),
-        origin: readField(body, 'De dónde viene el valor'),
-    };
-    const errors = [];
-
-    if (!NAME_PATTERN.test(request.name)) errors.push(`Nombre inválido: \`${request.name}\`. Solo minúsculas, números y guiones.`);
-    if (!ALLOWED_VAULTS.includes(request.vault)) errors.push(`Key Vault \`${request.vault}\` no está autorizado.`);
-    if (!ALLOWED_ORIGINS.includes(request.origin)) errors.push(`Origen del valor inválido: \`${request.origin}\`.`);
-
-    for (const [pattern, kind] of LEAK_PATTERNS) {
-        if (pattern.test(body)) errors.push(`🚨 **Parece un ${kind} EN CLARO.** Rotalo ya: quedó en el historial del issue.`);
-    }
-    return { request, errors };
-}
-
-function render({ request, errors }, runLink) {
-    const rows = [['Nombre', request.name], ['Key Vault', request.vault], ['Origen del valor', request.origin]];
-    return [
-        errors.length ? '### ❌ Solicitud rechazada' : '### ✅ Solicitud válida', '',
-        '| Campo | Valor |', '|---|---|',
-        ...rows.map(([label, value]) => `| ${label} | \`${value}\` |`), '',
-        ...(errors.length
-            ? ['**Problemas encontrados:**', '', ...errors.map((e) => `- ${e}`), '', 'La solicitud se cerró: para corregirla, abrí otra.']
-            : [`Queda esperando la **aprobación de Seguridad** en el [run](${runLink}).`, '',
-               request.origin === GENERATED
-                   ? 'Al aprobarse, el sistema pide el valor y lo registra: nadie lo ve.'
-                   : 'Al aprobarse, se te avisa para que cargues vos el valor en el Key Vault. No lo pegues acá.']),
-    ].join('\n');
-}
-
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
-async function fetchIssue(github, context) {
-    const { data } = await github.rest.issues.get(issueRef(context));
-    return data;
+function validate(body, people, allowed) {
+    const request = readRequest(body);
+    const environment = vaultEnvironment(request.vault);
+    const allowedLower = allowed.map((login) => login.toLowerCase());
+    const errors = [];
+
+    for (const login of people) {
+        if (!allowedLower.includes(login.toLowerCase())) errors.push(`@${login} no pertenece a un equipo habilitado para pedir secretos.`);
+    }
+    if (!SECRET_NAME_PATTERN.test(request.name) || request.name.length > SECRET_NAME_MAX) {
+        errors.push(`El nombre del secreto \`${request.name}\` no es válido: solo minúsculas, números y guiones, hasta ${SECRET_NAME_MAX} caracteres.`);
+    }
+    if (!environment) {
+        errors.push(`El nombre del KV \`${request.vault}\` no respeta la nomenclatura \`azkv<código>eu2<d|c|p><nn>\`.`);
+    }
+    if (!request.justification) errors.push('Falta la justificación.');
+
+    const leak = LEAK_PATTERNS.find(([pattern]) => pattern.test(body));
+    return { request, environment, errors, leak: leak?.[1] };
 }
 
-// Al abrir el issue. El resultado va también al summary del run: es lo que ve quien aprueba.
-async function check({ github, context, core }) {
-    const body = (await fetchIssue(github, context)).body || '';
-    const result = validate(body);
-    const report = render(result, runUrl(context));
+function summary(request, environment) {
+    const ambient = environment.label === 'producción' ? '**producción** ⚠️' : environment.label;
+    return ['| Campo | Valor |', '|---|---|',
+        `| Nombre del secreto | \`${request.name}\` |`, `| KV | \`${request.vault}\` |`,
+        `| Ambiente | ${ambient} |`, `| Justificación | ${request.justification.replace(/\n+/g, ' ')} |`].join('\n');
+}
 
-    await github.rest.issues.createComment({ ...issueRef(context), body: report });
-    await core.summary.addRaw(report).write();
+// Al abrir o editar el issue. Si algo falla, el issue queda abierto para corregirlo editando.
+async function check({ github, context, core }) {
+    const ref = issueRef(context);
+    const { data: issue } = await github.rest.issues.get(ref);
+    const body = issue.body || '';
+    const people = [...new Set([issue.user.login, context.payload.sender.login])];
+    const result = validate(body, people, loginList(process.env.ALLOWED_REQUESTERS));
+    core.setOutput('ok', 'false');
+
+    // Un valor pegado ya salió por el issue, su historial y los correos de GitHub: se da por quemado.
+    if (result.leak) {
+        await updateStages(github, context, { chequeo: null, valor: null, validacion: [
+            `### 🚨 Este texto parece contener un ${result.leak}`, '',
+            'Consideralo **expuesto**: pedí un valor nuevo al proveedor. Un admin tiene que borrar este issue.',
+            'El issue se cerró y se bloqueó; no se corrige editando.'].join('\n') });
+        await github.rest.issues.update({ ...ref, state: 'closed', state_reason: 'not_planned' });
+        await github.rest.issues.lock({ ...ref, lock_reason: 'resolved' });
+        return core.setFailed(`Se detectó un ${result.leak} en el texto del issue.`);
+    }
+
     if (result.errors.length) {
-        await github.rest.issues.update({ ...issueRef(context), state: 'closed', state_reason: 'not_planned' });
-        core.setFailed('La solicitud no pasó la validación.');
+        await updateStages(github, context, { chequeo: null, valor: null, validacion: [
+            '### ❌ El pedido tiene errores', '', ...result.errors.map((error) => `- ${error}`), '',
+            'Editá el issue para corregirlo: el bot lo vuelve a revisar solo.'].join('\n') });
+        await github.rest.issues.addLabels({ ...ref, labels: [LABELS.errors] });
         return;
     }
+
+    await removeLabel(github, context, LABELS.errors);
+    await updateStages(github, context, { chequeo: null, valor: null,
+        validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment)].join('\n') });
+    core.setOutput('ok', 'true');
+    core.setOutput('name', result.request.name);
+    core.setOutput('vault', result.request.vault);
+    core.setOutput('gate', result.environment.gate);
+    core.setOutput('environment', result.environment.label);
     core.setOutput('body_sha256', sha256(body));
 }
 
-// Justo antes de generar: lo aprobado tiene que ser exactamente lo validado, y registrarse una sola vez.
-async function recheck({ github, context, core }) {
-    const issue = await fetchIssue(github, context);
-    const body = issue.body || '';
-    const labels = issue.labels.map((label) => label.name ?? label);
+const PRECHECK_PROBLEMS = {
+    'no-existe': 'el KV no existe o su nombre está mal escrito',
+    'red-cerrada': 'el KV tiene la red cerrada: el runner no llega (lo resuelve Cloud)',
+    'sin-permiso': 'la identidad del flujo no tiene permiso en este KV (Access Policies o falta el rol: lo resuelve Cloud)',
+    'nombre-existe': 'ya existe un secreto con ese nombre en el KV: elegí otro nombre del secreto',
+    otro: 'Azure respondió un error inesperado (ver el log de la corrida)',
+};
 
-    if (issue.state !== 'open') return core.setFailed('El issue ya no está abierto.');
-    if (labels.includes(REGISTERED_LABEL)) return core.setFailed('La solicitud ya fue registrada.');
-    if (sha256(body) !== process.env.APPROVED_SHA256) return core.setFailed('El issue cambió después de validarse. Abrí otra solicitud.');
-
-    const { request, errors } = validate(body);
-    if (errors.length) return core.setFailed(`La solicitud dejó de ser válida: ${errors.join(' ')}`);
-    for (const key of ['name', 'vault']) core.setOutput(key, request[key]);
-    // El workflow decide con esto si genera el valor o si solo avisa que ya se puede cargar.
-    core.setOutput('generated', String(request.origin === GENERATED));
+// Después del chequeo previo en Azure: si pasó, indica cómo cargar el valor y avisa a Seguridad.
+async function reportPrecheck({ github, context, core }) {
+    const { PROBLEM, VAULT, SECRET_NAME, ENVIRONMENT } = process.env;
+    core.setOutput('ok', 'false');
+    if (PROBLEM) {
+        await updateStages(github, context, { chequeo: ['### ❌ Chequeo previo en Azure', '',
+            `No se puede seguir: ${PRECHECK_PROBLEMS[PROBLEM] || PRECHECK_PROBLEMS.otro}.`, '',
+            'Editá el issue para corregirlo: el bot lo vuelve a revisar solo.'].join('\n') });
+        await github.rest.issues.addLabels({ ...issueRef(context), labels: [LABELS.errors] });
+        return;
+    }
+    const valueName = githubSecretName(context.issue.number);
+    await updateStages(github, context, { chequeo: ['### ✅ Chequeo previo en Azure', '',
+        `El KV \`${VAULT}\` existe, el runner llega y el nombre del secreto \`${SECRET_NAME}\` está libre en ese KV.`, '',
+        '### Siguiente paso: cargar el valor', '',
+        `1. Quien recibió el valor lo carga como **secret de GitHub** con el nombre **\`${valueName}\`** en`,
+        `   [Settings → Secrets and variables → Actions → New repository secret](${repoUrl(context)}/settings/secrets/actions/new).`,
+        '2. Comenta `/cargado` en este issue.', '',
+        `${mentions(process.env.SECURITY_TEAM)} hay un pedido esperando (ambiente: ${ENVIRONMENT}).`].join('\n') });
+    core.setOutput('ok', 'true');
 }
 
-module.exports = { check, recheck };
+// Justo antes de escribir: lo aprobado tiene que ser exactamente lo validado, y registrarse una sola vez.
+async function recheck({ github, context, core }) {
+    const ref = issueRef(context);
+    const { data: issue } = await github.rest.issues.get(ref);
+    const labels = issue.labels.map((label) => label.name ?? label);
+    const stop = (reason, message) => { core.setOutput('reason', reason); core.setFailed(message); };
+
+    if (issue.state !== 'open') return stop('pedido-cerrado', 'El issue ya no está abierto.');
+    if (labels.includes(LABELS.registered)) return stop('ya-registrado', 'El pedido ya fue registrado.');
+    if (sha256(issue.body || '') !== process.env.APPROVED_SHA256) return stop('pedido-cambiado', 'El issue cambió después de validarse.');
+
+    // Quién aprobó sale de la revisión del environment, no de quien disparó la corrida.
+    const { data: reviews } = await github.rest.actions.getReviewsForRun({ owner: ref.owner, repo: ref.repo, run_id: context.runId });
+    const approver = reviews.find((review) => review.state === 'approved')?.user.login || 'desconocido';
+    const request = readRequest(issue.body || '');
+    core.setOutput('name', request.name);
+    core.setOutput('vault', request.vault);
+    core.setOutput('approver', approver);
+}
+
+module.exports = { check, reportPrecheck, recheck, validate };
