@@ -1,0 +1,105 @@
+# Valida el pedido al abrirlo o editarlo y lo chequea en Azure. No espera aprobación: la corrida que escribe
+# en el KV nace con el /cargado (registrar-secreto.yml), cuando el valor ya existe.
+name: "Validar pedido"
+run-name: "Validar — #${{ github.event.issue.number }}"
+
+on:
+  issues:
+    types: [opened, edited]
+
+concurrency:
+  group: validar-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  validate:
+    name: Validar pedido
+    # Al editar, solo si cambió el cuerpo: un cambio de título no reabre la validación.
+    if: >-
+      contains(github.event.issue.labels.*.name, 'registro-secreto') && github.event.issue.state == 'open' &&
+      (github.event.action == 'opened' || github.event.changes.body)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read  # checkout de los scripts
+      issues: write   # comentar, etiquetar, cerrar y bloquear
+      actions: write  # cancelar la espera de aprobación si se editó el pedido
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+      name: ${{ steps.check.outputs.name }}
+      vault: ${{ steps.check.outputs.vault }}
+      environment: ${{ steps.check.outputs.environment }}
+    steps:
+      # Acciones ancladas a SHA: una etiqueta se puede reapuntar a otro código.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      - name: Validar el pedido
+        id: check
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        env:
+          ALLOWED_REQUESTERS: ${{ vars.ALLOWED_REQUESTERS }}
+        with:
+          script: await require('./.github/scripts/validar-solicitud.js').check({ github, context, core })
+
+  # Antes de molestar al analista: con la identidad que solo lee nombres, nunca valores.
+  precheck:
+    name: Chequeo previo en Azure
+    needs: validate
+    if: needs.validate.outputs.ok == 'true'
+    environment: conciliacion
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read   # checkout de los scripts
+      issues: write    # contar el resultado en el issue
+      id-token: write  # pedirle a GitHub el token OIDC que Azure valida
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+
+      # Identificadores, no credenciales: van como secrets del environment porque el repo es público.
+      - name: Entrar a Azure
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6  # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Revisar el KV y el nombre del secreto
+        id: look
+        env:
+          VAULT: ${{ needs.validate.outputs.vault }}
+          SECRET_NAME: ${{ needs.validate.outputs.name }}
+        run: |
+          set -uo pipefail
+          error_file="$(mktemp)"
+          problem=""
+          if names="$(az keyvault secret list --vault-name "$VAULT" --query "[].name" --output tsv 2>"$error_file")"; then
+              if grep -qxF "$SECRET_NAME" <<<"$names"; then problem="nombre-existe"; fi
+          else
+              head -5 "$error_file"
+              if grep -qiE 'ForbiddenByFirewall|Client address' "$error_file"; then problem="red-cerrada"
+              elif grep -qiE 'Forbidden|does not have' "$error_file"; then problem="sin-permiso"
+              elif grep -qiE 'VaultNotFound|not found|resolve|getaddrinfo|Name or service' "$error_file"; then problem="no-existe"
+              else problem="otro"
+              fi
+          fi
+          echo "problem=$problem" >> "$GITHUB_OUTPUT"
+
+      - name: Contarlo en el issue
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        env:
+          PROBLEM: ${{ steps.look.outputs.problem }}
+          VAULT: ${{ needs.validate.outputs.vault }}
+          SECRET_NAME: ${{ needs.validate.outputs.name }}
+          ENVIRONMENT: ${{ needs.validate.outputs.environment }}
+          SECURITY_TEAM: ${{ vars.SECURITY_TEAM }}
+        with:
+          script: await require('./.github/scripts/validar-solicitud.js').reportPrecheck({ github, context, core })

@@ -2,16 +2,26 @@
 // con menos de 24 h sobra. El repo no tiene secrets de GitHub propios, así que se puede "volar todo" lo demás.
 'use strict';
 
-const { LABELS, githubSecretName, updateStages } = require('./common');
+const { LABELS, githubSecretName, updateStages, waitingRegisterRuns } = require('./common');
 
 const TTL_HOURS = 24;
 const VALUE_PATTERN = /^VALOR_ISSUE_(\d+)$/;
 
-// Paso 1, con el token del workflow: qué pedidos siguen abiertos.
+// Paso 1, con el token del workflow: qué pedidos siguen abiertos, y cancela las esperas de aprobación
+// de más de 24 h. GitHub fija los secrets de una corrida al crearla: la espera guarda su propia copia del
+// valor, así que borrar el secret de GitHub no alcanza.
 async function openRequests({ github, context, core }) {
     const issues = await github.paginate(github.rest.issues.listForRepo, {
         owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: LABELS.request, per_page: 100 });
     core.setOutput('open', JSON.stringify(issues.filter((issue) => !issue.pull_request).map((issue) => issue.number)));
+
+    const stale = [];
+    for (const { run, issue } of await waitingRegisterRuns(github, context)) {
+        if ((Date.now() - new Date(run.created_at).getTime()) / 3600000 <= TTL_HOURS) continue;
+        await github.rest.actions.cancelWorkflowRun({ owner: context.repo.owner, repo: context.repo.repo, run_id: run.id });
+        stale.push(issue);
+    }
+    core.setOutput('stale', JSON.stringify(stale));
 }
 
 // Paso 2, con el token de la App: decide y borra. Solo ve nombres y fechas, nunca valores.
@@ -45,11 +55,12 @@ async function sweep({ github, context, core }) {
 
 // Paso 3, con el token del workflow: avisa en cada pedido que su valor venció.
 async function notify({ github, context }) {
-    for (const issueNumber of JSON.parse(process.env.EXPIRED || '[]')) {
+    const issues = new Set([...JSON.parse(process.env.EXPIRED || '[]'), ...JSON.parse(process.env.STALE || '[]')]);
+    for (const issueNumber of issues) {
         const issueContext = { ...context, issue: { ...context.issue, number: issueNumber } };
         await updateStages(github, issueContext, { valor: ['### ⏰ Valor vencido', '',
-            `El secret de GitHub \`${githubSecretName(issueNumber)}\` pasó ${TTL_HOURS} h sin aprobarse y se borró.`,
-            'Volvé a cargarlo cuando el analista esté disponible y comentá `/cargado`.'].join('\n') });
+            `Pasaron ${TTL_HOURS} h sin aprobación: se borró el secret de GitHub \`${githubSecretName(issueNumber)}\` o se canceló la espera.`,
+            'Volvé a cargar el valor si hace falta y comentá `/cargado` cuando el analista esté disponible.'].join('\n') });
     }
 }
 

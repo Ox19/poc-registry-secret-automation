@@ -83,6 +83,14 @@ async function updateStages(github, context, changes) {
     }
 }
 
+// Corridas de "Registrar secreto" que esperan aprobación; con issueNumber, solo las de ese pedido.
+async function waitingRegisterRuns(github, context, issueNumber) {
+    const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+        owner: context.repo.owner, repo: context.repo.repo, workflow_id: 'registrar-secreto.yml', status: 'waiting', per_page: 100 });
+    return runs.map((run) => ({ run, issue: Number(run.display_title.match(/#(\d+)$/)?.[1]) }))
+        .filter(({ issue }) => !issueNumber || issue === issueNumber);
+}
+
 async function removeLabel(github, context, name) {
     try {
         await github.rest.issues.removeLabel({ ...issueRef(context), name });
@@ -94,5 +102,5 @@ async function removeLabel(github, context, name) {
 module.exports = {
     LABELS, VAULT_PATTERN, SECRET_NAME_PATTERN, SECRET_NAME_MAX,
     githubSecretName, issueRef, repoUrl, runUrl, loginList, mentions,
-    readField, readRequest, vaultEnvironment, updateStages, removeLabel,
+    readField, readRequest, vaultEnvironment, updateStages, removeLabel, waitingRegisterRuns,
 };

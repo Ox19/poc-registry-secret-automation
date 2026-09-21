@@ -5,7 +5,7 @@
 const crypto = require('node:crypto');
 const {
     LABELS, SECRET_NAME_PATTERN, SECRET_NAME_MAX, githubSecretName, issueRef, repoUrl, loginList, mentions,
-    readRequest, vaultEnvironment, updateStages, removeLabel,
+    readRequest, vaultEnvironment, updateStages, removeLabel, waitingRegisterRuns,
 } = require('./common');
 
 // Guardarraíl: el valor de un secreto pegado en el texto por error.
@@ -56,6 +56,16 @@ async function check({ github, context, core }) {
     const result = validate(body, people, loginList(process.env.ALLOWED_REQUESTERS));
     core.setOutput('ok', 'false');
 
+    // Si se editó, la espera de aprobación anterior ya no corresponde a lo pedido: se cancela.
+    let cancelled = 0;
+    if (context.payload.action === 'edited') {
+        for (const { run } of await waitingRegisterRuns(github, context, context.issue.number)) {
+            await github.rest.actions.cancelWorkflowRun({ owner: ref.owner, repo: ref.repo, run_id: run.id });
+            cancelled += 1;
+        }
+    }
+    const editNote = cancelled ? ['', 'Se editó el pedido: la espera de aprobación anterior se canceló. Volvé a comentar `/cargado`.'] : [];
+
     // Un valor pegado ya salió por el issue, su historial y los correos de GitHub: se da por quemado.
     if (result.leak) {
         await updateStages(github, context, { chequeo: null, valor: null, validacion: [
@@ -77,13 +87,11 @@ async function check({ github, context, core }) {
 
     await removeLabel(github, context, LABELS.errors);
     await updateStages(github, context, { chequeo: null, valor: null,
-        validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment)].join('\n') });
+        validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment), ...editNote].join('\n') });
     core.setOutput('ok', 'true');
     core.setOutput('name', result.request.name);
     core.setOutput('vault', result.request.vault);
-    core.setOutput('gate', result.environment.gate);
     core.setOutput('environment', result.environment.label);
-    core.setOutput('body_sha256', sha256(body));
 }
 
 const PRECHECK_PROBLEMS = {
@@ -111,9 +119,34 @@ async function reportPrecheck({ github, context, core }) {
         '### Siguiente paso: cargar el valor', '',
         `1. Quien recibió el valor lo carga como **secret de GitHub** con el nombre **\`${valueName}\`** en`,
         `   [Settings → Secrets and variables → Actions → New repository secret](${repoUrl(context)}/settings/secrets/actions/new).`,
-        '2. Comentá `/cargado` en este issue.', '',
+        '2. Comentá `/cargado` en este issue: recién ahí se pide la aprobación del analista.', '',
         `${mentions(process.env.SECURITY_TEAM)} hay un pedido esperando (ambiente: ${ENVIRONMENT}).`].join('\n') });
     core.setOutput('ok', 'true');
+}
+
+// Con el /cargado: el pedido tiene que seguir válido y quien comenta tiene que poder pedir o ser de Seguridad.
+async function revalidate({ github, context, core }) {
+    const ref = issueRef(context);
+    const { data: issue } = await github.rest.issues.get(ref);
+    const labels = issue.labels.map((label) => label.name ?? label);
+    const body = issue.body || '';
+    const requesters = loginList(process.env.ALLOWED_REQUESTERS);
+    const commenter = context.payload.comment.user.login.toLowerCase();
+    const result = validate(body, [issue.user.login], requesters);
+    const errors = [...result.errors];
+    if (result.leak) errors.push('El texto del issue parece contener un secreto.');
+    if (labels.includes(LABELS.registered)) errors.push('El pedido ya fue registrado.');
+    if (![...requesters, ...loginList(process.env.SECURITY_TEAM)].map((login) => login.toLowerCase()).includes(commenter)) {
+        errors.push(`@${context.payload.comment.user.login} no puede confirmar la carga: no es de un equipo habilitado ni de Seguridad.`);
+    }
+    core.setOutput('ok', 'false');
+    if (errors.length) {
+        await updateStages(github, context, { valor: ['### ❌ No se puede confirmar la carga', '', ...errors.map((error) => `- ${error}`)].join('\n') });
+        return;
+    }
+    core.setOutput('ok', 'true');
+    core.setOutput('gate', result.environment.gate);
+    core.setOutput('body_sha256', sha256(body));
 }
 
 // Justo antes de escribir: lo aprobado tiene que ser exactamente lo validado, y registrarse una sola vez.
@@ -136,4 +169,4 @@ async function recheck({ github, context, core }) {
     core.setOutput('approver', approver);
 }
 
-module.exports = { check, reportPrecheck, recheck, validate };
+module.exports = { check, reportPrecheck, revalidate, recheck, validate };
