@@ -76,6 +76,9 @@ async function check({ github, context, core }) {
     }
 
     await removeLabel(github, context, LABELS.errors);
+    // El título lo pone el bot: nadie tiene que escribirlo y la lista de issues se lee sola.
+    const title = `[Secreto] ${result.request.name} · ${result.request.vault}`;
+    if (issue.title !== title) await github.rest.issues.update({ ...ref, title });
     await updateStages(github, context, { chequeo: null, valor: null,
         validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment)].join('\n') });
     core.setOutput('ok', 'true');
@@ -111,7 +114,7 @@ async function reportPrecheck({ github, context, core }) {
         '### Siguiente paso: cargar el valor', '',
         `1. Quien recibió el valor lo carga como **secret de GitHub** con el nombre **\`${valueName}\`** en`,
         `   [Settings → Secrets and variables → Actions → New repository secret](${repoUrl(context)}/settings/secrets/actions/new).`,
-        '2. Comenta `/cargado` en este issue.', '',
+        '2. Comentá `/cargado` en este issue.', '',
         `${mentions(process.env.SECURITY_TEAM)} hay un pedido esperando (ambiente: ${ENVIRONMENT}).`].join('\n') });
     core.setOutput('ok', 'true');
 }
