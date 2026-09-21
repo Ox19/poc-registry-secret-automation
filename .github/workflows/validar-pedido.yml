@@ -34,13 +34,13 @@ jobs:
     steps:
       # Acciones ancladas a SHA: una etiqueta se puede reapuntar a otro código.
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
 
       - name: Validar el pedido
         id: check
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8
         env:
           ALLOWED_REQUESTERS: ${{ vars.ALLOWED_REQUESTERS }}
         with:
@@ -60,13 +60,13 @@ jobs:
       id-token: write  # pedirle a GitHub el token OIDC que Azure valida
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
 
       # Identificadores, no credenciales: van como secrets del environment porque el repo es público.
       - name: Entrar a Azure
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6  # v2
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -94,7 +94,7 @@ jobs:
           echo "problem=$problem" >> "$GITHUB_OUTPUT"
 
       - name: Contarlo en el issue
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8
         env:
           PROBLEM: ${{ steps.look.outputs.problem }}
           VAULT: ${{ needs.validate.outputs.vault }}
