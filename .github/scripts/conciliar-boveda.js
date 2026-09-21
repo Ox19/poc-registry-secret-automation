@@ -1,56 +1,59 @@
-// Compara lo que hay en la bóveda contra los pedidos aprobados: detecta secretos cargados sin pedido
-// y cierra los pedidos cuyo valor ya fue cargado a mano. Nunca lee un valor, solo nombres.
+// Conciliación: compara lo que anotó el flujo (issues `registrado`) con lo que hay de verdad en los KV.
+// Es la cámara de la puerta trasera (el portal de Azure): no impide, detecta. Solo nombres y etiquetas.
 'use strict';
 
-const { REGISTERED_LABEL, PENDING_LABEL, runUrl } = require('./common');
+const fs = require('node:fs');
+const { LABELS, mentions, readRequest } = require('./common');
 
-// Los nombres de la bóveda llegan por env desde el step que corrió `az keyvault secret list`.
-const vaultSecrets = () => (process.env.VAULT_SECRETS || '').split('\n').map((s) => s.trim()).filter(Boolean);
+const FLOW_TAG = 'registrado-por';
 
-const secretName = (issue) => issue.title.replace(/^\[Secreto\]\s*/i, '').trim();
+// Paso 1: los pedidos registrados y los KV donde viven sus secretos.
+async function registeredRequests({ github, context, core }) {
+    const issues = await github.paginate(github.rest.issues.listForRepo, {
+        owner: context.repo.owner, repo: context.repo.repo, state: 'all', labels: LABELS.registered, per_page: 100 });
+    const requests = issues.filter((issue) => !issue.pull_request)
+        .map((issue) => ({ number: issue.number, ...readRequest(issue.body || '') }));
+    core.setOutput('requests', JSON.stringify(requests));
+    core.setOutput('vaults', [...new Set(requests.map((request) => request.vault))].join(' '));
+}
 
-module.exports = async ({ github, context, core }) => {
-    const repo = { owner: context.repo.owner, repo: context.repo.repo };
-    const enBoveda = new Set(vaultSecrets());
+// Paso 3: las tres preguntas, con lo que listó Azure en el paso 2.
+async function compare({ github, context, core }) {
+    const requests = JSON.parse(process.env.REQUESTS || '[]');
+    const inventory = JSON.parse(fs.readFileSync(process.env.INVENTORY_FILE, 'utf8'));
+    const flowStart = new Date(process.env.FLOW_START);
+    const findings = [];
 
-    const { data: pendientes } = await github.rest.issues.listForRepo({
-        ...repo, state: 'open', labels: PENDING_LABEL, per_page: 100 });
-    const { data: registrados } = await github.rest.issues.listForRepo({
-        ...repo, state: 'all', labels: REGISTERED_LABEL, per_page: 100 });
+    for (const [vault, listing] of Object.entries(inventory)) {
+        if (!listing.ok) { findings.push(`- KV \`${vault}\`: **no se pudo revisar** (red cerrada o sin permiso).`); continue; }
+        const byName = new Map(listing.secrets.map((secret) => [secret.name, secret]));
 
-    // Un pedido aprobado cuyo secreto ya apareció en la bóveda: alguien lo cargó, se cierra.
-    const cerrados = [];
-    for (const issue of pendientes) {
-        const nombre = secretName(issue);
-        if (!enBoveda.has(nombre)) continue;
-        await github.rest.issues.createComment({ ...repo, issue_number: issue.number, body: [
-            '### ✅ El secreto ya está en la bóveda', '',
-            `Se detectó \`${nombre}\` en el Key Vault, así que el pedido queda cerrado.`,
-            'La conciliación solo mira nombres: el valor no se lee en ningún momento.',
-            '', `Corrida: ${runUrl(context)}`,
-        ].join('\n') });
-        await github.rest.issues.addLabels({ ...repo, issue_number: issue.number, labels: [REGISTERED_LABEL] });
-        await github.rest.issues.removeLabel({ ...repo, issue_number: issue.number, name: PENDING_LABEL });
-        await github.rest.issues.update({ ...repo, issue_number: issue.number, state: 'closed', state_reason: 'completed' });
-        cerrados.push(nombre);
+        // 1 · Lo que registró el flujo, ¿sigue en el KV?
+        for (const request of requests.filter((candidate) => candidate.vault === vault)) {
+            const secret = byName.get(request.name);
+            if (!secret) findings.push(`- #${request.number}: el secreto \`${request.name}\` **ya no está** en el KV \`${vault}\`: alguien lo borró desde el portal.`);
+            // 3 · ¿Alguien lo pisó? La última versión sin la etiqueta del flujo la escribió otro.
+            else if (secret.tags?.[FLOW_TAG] !== 'registro-secretos') findings.push(`- #${request.number}: la última versión de \`${request.name}\` en el KV \`${vault}\` **no la creó el flujo**: alguien lo pisó desde el portal.`);
+        }
+        // 2 · Lo que hay en el KV, ¿tiene pedido? Solo cuenta lo creado después del arranque del flujo.
+        for (const secret of listing.secrets) {
+            const createdAfterStart = new Date(secret.created) > flowStart;
+            if (createdAfterStart && !secret.tags?.[FLOW_TAG]) findings.push(`- KV \`${vault}\`: el secreto \`${secret.name}\` **no tiene pedido**: se creó a mano en el portal.`);
+        }
     }
 
-    // Lo que está en la bóveda sin ningún pedido detrás: acá el control es detectivo, no preventivo.
-    const conPedido = new Set([...pendientes, ...registrados].map(secretName));
-    const huerfanos = [...enBoveda].filter((nombre) => !conPedido.has(nombre));
+    const vaults = Object.keys(inventory).length;
+    if (!findings.length) {
+        await core.summary.addRaw(`Conciliación: ${requests.length} pedidos registrados en ${vaults} KV, todo cuadra.`).write();
+        return;
+    }
+    const body = ['### 🔎 La conciliación encontró diferencias', '',
+        'Compara lo que anotó el flujo con lo que hay de verdad en los KV (solo nombres y etiquetas, nunca valores).', '',
+        ...findings, '', mentions(process.env.SECURITY_TEAM)].join('\n');
+    await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo,
+        title: `[Conciliación] ${findings.length} diferencia(s) — ${new Date().toISOString().slice(0, 10)}`,
+        body, labels: [LABELS.reconciliationAlert] });
+    await core.summary.addRaw(body).write();
+}
 
-    const resumen = [
-        '## Conciliación de la bóveda', '',
-        `| Secretos en la bóveda | ${enBoveda.size} |`, '|---|---|',
-        `| Pedidos cerrados ahora | ${cerrados.length} |`,
-        `| **Sin pedido que los respalde** | **${huerfanos.length}** |`, '',
-        ...(huerfanos.length
-            ? ['### ⚠️ Secretos sin pedido aprobado', '',
-               ...huerfanos.map((n) => `- \`${n}\``), '',
-               'Alguien los cargó sin pasar por el flujo. Hay que revisar quién y por qué.']
-            : ['Todo lo que hay en la bóveda tiene un pedido aprobado detrás.']),
-    ].join('\n');
-
-    await core.summary.addRaw(resumen).write();
-    if (huerfanos.length) core.setFailed(`${huerfanos.length} secreto(s) sin pedido aprobado.`);
-};
+module.exports = { registeredRequests, compare };

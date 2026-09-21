@@ -1,25 +1,24 @@
-# Compara la bóveda contra los pedidos aprobados. Cierra los que ya se cargaron y avisa de los
-# secretos que aparecieron sin pedido detrás. Acá el control es detectivo: detecta, no impide.
-name: "Conciliar bóveda"
+# Cada día: compara lo que anotó el flujo con lo que hay de verdad en los KV. El KV tiene una puerta trasera
+# (el portal de Azure); esto la mira: no impide, detecta. Solo nombres y etiquetas, nunca valores.
+name: "Conciliar KV"
 
 on:
   schedule:
-    - cron: "0 13 * * 1-5"   # días hábiles, 8am hora de Lima
-  workflow_dispatch:          # y a mano, para la demo
+    - cron: "0 13 * * *"   # todos los días, 8am hora de Lima
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  conciliar:
+  reconcile:
     name: Conciliar
-    # Environment propio, sin aprobación: esta identidad solo puede listar nombres, no escribir.
-    # Si usara el de registro, cada conciliación quedaría esperando que alguien la apruebe.
+    # Environment propio, sin aprobación: esta identidad solo lista nombres, no escribe.
     environment: conciliacion
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read   # checkout de los scripts
-      issues: write    # comentar, etiquetar y cerrar los pedidos ya cargados
+      issues: write    # abrir el issue de alerta
       id-token: write  # pedirle a GitHub el token OIDC que Azure valida
     steps:
       - name: Checkout
@@ -27,29 +26,46 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Pedidos registrados
+        id: requests
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
+        with:
+          script: await require('./.github/scripts/conciliar-boveda.js').registeredRequests({ github, context, core })
+
       - name: Entrar a Azure
+        if: steps.requests.outputs.vaults != ''
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6  # v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Solo nombres: el rol permite listar metadatos y sigue sin poder leer un valor.
-      - name: Listar qué hay en la bóveda
-        id: boveda
+      # Solo los KV que aparecen en algún pedido; uno que no responde no frena a los demás.
+      - name: Listar nombres y etiquetas de los secretos del KV
+        if: steps.requests.outputs.vaults != ''
         env:
-          VAULT: kv-poc-secretos-78e549
+          VAULTS: ${{ steps.requests.outputs.vaults }}
         run: |
-          set -euo pipefail
-          {
-            echo "secrets<<FIN"
-            az keyvault secret list --vault-name "$VAULT" --query "[].name" --output tsv
-            echo "FIN"
-          } >> "$GITHUB_OUTPUT"
+          set -uo pipefail
+          inventory="$RUNNER_TEMP/inventario.json"
+          echo '{}' > "$inventory"
+          for vault in $VAULTS; do
+              if listing="$(az keyvault secret list --vault-name "$vault" \
+                      --query "[].{name:name, tags:tags, created:attributes.created}" --output json 2>/dev/null)"; then
+                  jq --arg v "$vault" --argjson s "$listing" '.[$v] = {ok: true, secrets: $s}' "$inventory" > "$inventory.tmp"
+              else
+                  jq --arg v "$vault" '.[$v] = {ok: false, secrets: []}' "$inventory" > "$inventory.tmp"
+              fi
+              mv "$inventory.tmp" "$inventory"
+          done
 
-      - name: Comparar contra los pedidos aprobados
+      - name: Comparar y avisar
+        if: steps.requests.outputs.vaults != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         env:
-          VAULT_SECRETS: ${{ steps.boveda.outputs.secrets }}
+          REQUESTS: ${{ steps.requests.outputs.requests }}
+          INVENTORY_FILE: ${{ runner.temp }}/inventario.json
+          FLOW_START: ${{ vars.FLOW_START }}
+          SECURITY_TEAM: ${{ vars.SECURITY_TEAM }}
         with:
-          script: await require('./.github/scripts/conciliar-boveda.js')({ github, context, core })
+          script: await require('./.github/scripts/conciliar-boveda.js').compare({ github, context, core })
