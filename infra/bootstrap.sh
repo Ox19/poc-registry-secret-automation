@@ -10,18 +10,25 @@ VAULT_NAME="kv-poc-secretos-78e549"          # 3-24 caracteres, único en todo A
 IDENTITY_NAME="id-github-registro-secretos"
 GITHUB_REPO="Ox19/poc-registry-secret-automation"
 GITHUB_ENVIRONMENT="registro-secretos"
+GITHUB_PROD_ENVIRONMENT="registro-secretos-prod"
 WRITER_ROLE_NAME="Key Vault Secret Writer (PoC)"
 READER_ROLE_NAME="Key Vault Metadata Reader (PoC)"
 AUDIT_IDENTITY_NAME="id-github-conciliacion"
 AUDIT_ENVIRONMENT="conciliacion"
+# Bóvedas con la nomenclatura de la empresa, azkv<código>eu2<d|c|p><nn>: de la letra sale el ambiente.
+NAMED_LOCATION="eastus2"
+VAULT_DEV="azkvpoclabeu2d01"
+VAULT_PROD="azkvpoclabeu2p01"
+VAULT_NO_WRITER="azkvpoclabeu2d02"    # prueba de falla: el pipeline no tiene rol de escritura
+VAULT_OVER_GRANTED="azkvpoclabeu2d03" # prueba de alerta: el pipeline puede leer, a propósito
 
 SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
 CURRENT_USER_ID="$(az ad signed-in-user show --query id --output tsv)"
 
-echo "==> 1/7 Grupo de recursos"
+echo "==> 1/8 Grupo de recursos"
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 
-echo "==> 2/7 Key Vault con RBAC"
+echo "==> 2/8 Key Vault con RBAC"
 # El flag de purge protection se omite a propósito: Azure solo acepta activarlo, nunca ponerlo
 # en false, y activarlo es irreversible. Sin él, el lab se puede borrar y recrear.
 if ! az keyvault show --name "$VAULT_NAME" --output none 2>/dev/null; then
@@ -35,13 +42,13 @@ if ! az keyvault show --name "$VAULT_NAME" --output none 2>/dev/null; then
 fi
 VAULT_ID="$(az keyvault show --name "$VAULT_NAME" --query id --output tsv)"
 
-echo "==> 3/7 Identidad administrada para GitHub"
+echo "==> 3/8 Identidad administrada para GitHub"
 # Es un recurso de la suscripción, no un App Registration: no necesita permisos en el Entra de la U.
 az identity create --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --output none
 IDENTITY_PRINCIPAL_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query principalId --output tsv)"
 IDENTITY_CLIENT_ID="$(az identity show --name "$IDENTITY_NAME" --resource-group "$RESOURCE_GROUP" --query clientId --output tsv)"
 
-echo "==> 4/7 Credencial federada: solo este repo y solo este environment"
+echo "==> 4/8 Credencial federada: solo este repo y solo este environment"
 # El 'subject' es lo que GitHub firma en su token; si no calza exacto, Azure rechaza el login.
 # GitHub le anexa los IDs numéricos del dueño y del repo, así que se leen de su API en vez de
 # escribirlos a mano: atado al ID, el permiso sobrevive a un renombre y nadie hereda el nombre viejo.
@@ -55,13 +62,15 @@ az identity federated-credential create \
     --audiences "api://AzureADTokenExchange" \
     --output none
 
-echo "==> 5/7 Rol a medida: escribir sí, leer no"
+echo "==> 5/8 Rol a medida: escribir sí, leer no"
 # El rol integrado 'Key Vault Secrets Officer' también permite getSecret, así que el pipeline
 # podría releer lo que acaba de escribir. Este rol tiene dos acciones y ninguna más:
-# Una sola acción: escribir. Listar y auditar es tarea de otra identidad, con otro rol.
-writer_body='"description": "Escribe secretos en Key Vault sin poder leerlos.",
+# readMetadata ve nombres, nunca valores: sirve para rechazar un nombre del secreto que ya existe,
+# porque Key Vault no avisa y crearía una versión nueva encima del valor en uso.
+writer_body='"description": "Escribe secretos en Key Vault y ve sus nombres, sin poder leer valores.",
     "actions": [],
-    "dataActions": ["Microsoft.KeyVault/vaults/secrets/setSecret/action"],
+    "dataActions": ["Microsoft.KeyVault/vaults/secrets/setSecret/action",
+                    "Microsoft.KeyVault/vaults/secrets/readMetadata/action"],
     "assignableScopes": ["/subscriptions/'"$SUBSCRIPTION_ID"'"]'
 
 ROLE_ID="$(az role definition list --name "$WRITER_ROLE_NAME" --query "[0].name" --output tsv)"
@@ -71,7 +80,7 @@ else
     az role definition update --role-definition "{\"name\": \"$ROLE_ID\", \"roleName\": \"$WRITER_ROLE_NAME\", $writer_body}" --output none
 fi
 
-echo "==> 5b/7 Identidad que concilia: lista nombres y no escribe nada"
+echo "==> 5b/8 Identidad que concilia: lista nombres y no escribe nada"
 # Corre sin aprobación humana, así que no puede tener permiso de escritura: si lo tuviera, alguien
 # podría registrar un secreto por esta vía saltándose la aprobación del environment principal.
 reader_body='"description": "Lista los secretos de Key Vault. No puede escribir ni ver valores.",
@@ -105,7 +114,7 @@ az role assignment create \
     --scope "$VAULT_ID" \
     --output none
 
-echo "==> 6/7 Asignar ese rol a la identidad, solo sobre esta bóveda"
+echo "==> 6/8 Asignar ese rol a la identidad, solo sobre esta bóveda"
 az role assignment create \
     --assignee-object-id "$IDENTITY_PRINCIPAL_ID" \
     --assignee-principal-type ServicePrincipal \
@@ -113,12 +122,52 @@ az role assignment create \
     --scope "$VAULT_ID" \
     --output none
 
-echo "==> 7/7 Darme a mí lectura, para poder verificar el resultado"
+echo "==> 7/8 Darme a mí lectura, para poder verificar el resultado"
 az role assignment create \
     --assignee-object-id "$CURRENT_USER_ID" \
     --assignee-principal-type User \
     --role "Key Vault Secrets Officer" \
     --scope "$VAULT_ID" \
+    --output none
+
+echo "==> 8/8 Bóvedas con la nomenclatura de la empresa, para las pruebas del flujo"
+# Login del environment de producción: la credencial federada va atada al nombre del environment.
+PROD_SUBJECT="$(gh api "repos/$GITHUB_REPO" --jq "\"repo:\(.owner.login)@\(.owner.id)/\(.name)@\(.id):environment:$GITHUB_PROD_ENVIRONMENT\"")"
+az identity federated-credential create \
+    --name "github-$GITHUB_PROD_ENVIRONMENT" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --issuer "https://token.actions.githubusercontent.com" \
+    --subject "$PROD_SUBJECT" \
+    --audiences "api://AzureADTokenExchange" \
+    --output none
+
+for vault in "$VAULT_DEV" "$VAULT_PROD" "$VAULT_NO_WRITER" "$VAULT_OVER_GRANTED"; do
+    if ! az keyvault show --name "$vault" --output none 2>/dev/null; then
+        az keyvault create \
+            --name "$vault" \
+            --resource-group "$RESOURCE_GROUP" \
+            --location "$NAMED_LOCATION" \
+            --enable-rbac-authorization true \
+            --retention-days 7 \
+            --output none
+    fi
+    vault_id="$(az keyvault show --name "$vault" --query id --output tsv)"
+    # La identidad que concilia y hace el chequeo previo ve nombres en todas.
+    az role assignment create --assignee-object-id "$AUDIT_PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+        --role "$READER_ROLE_NAME" --scope "$vault_id" --output none
+    # Yo, solo metadatos: alcanza para verificar nombres y etiquetas de lo que escribe el flujo.
+    az role assignment create --assignee-object-id "$CURRENT_USER_ID" --assignee-principal-type User \
+        --role "Key Vault Reader" --scope "$vault_id" --output none
+    if [[ "$vault" != "$VAULT_NO_WRITER" ]]; then
+        az role assignment create --assignee-object-id "$IDENTITY_PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+            --role "$WRITER_ROLE_NAME" --scope "$vault_id" --output none
+    fi
+done
+
+# A propósito y solo en esta bóveda: el pipeline también puede leer, para que la prueba del 403 lo delate.
+az role assignment create --assignee-object-id "$IDENTITY_PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
+    --role "Key Vault Secrets User" --scope "$(az keyvault show --name "$VAULT_OVER_GRANTED" --query id --output tsv)" \
     --output none
 
 # En el tenant de la UPC los alumnos no pueden crear grupos (allowedToCreateSecurityGroups: false),
