@@ -76,9 +76,6 @@ async function check({ github, context, core }) {
     }
 
     await removeLabel(github, context, LABELS.errors);
-    // El título lo pone el bot: nadie tiene que escribirlo y la lista de issues se lee sola.
-    const title = `[Secreto] ${result.request.name} · ${result.request.vault}`;
-    if (issue.title !== title) await github.rest.issues.update({ ...ref, title });
     await updateStages(github, context, { chequeo: null, valor: null,
         validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment)].join('\n') });
     core.setOutput('ok', 'true');
