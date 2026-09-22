@@ -1,81 +1,94 @@
 # Registro de secretos en Azure Key Vault
 
-El valor va **directo de su origen a la bóveda, en un solo salto**, y quien lo pone no puede leerlo
-después. Si el secreto lo puede emitir una API, lo escribe `github[bot]` y nadie lo ve nunca; si lo
-entrega un proveedor, lo carga quien lo recibió — sin pasar por chat, correo ni por este repo.
+El valor va **directo de su origen a la bóveda, en un solo salto**, y quien lo escribe no puede leerlo
+después. Todo entra por **GitHub Actions**: se pide en un issue, un analista aprueba, y `github[bot]`
+lo escribe en el Key Vault sin que nadie —ni el propio pipeline— pueda verlo. Nadie usa el portal de
+Azure.
 
 > **Laboratorio.** Corre contra un Azure real (suscripción *Azure for Students*), pero el valor que
-> se registra es un canario con formato reconocible, no una credencial de un sistema real. Es el
-> espejo funcional de una PoC hecha para un cliente, donde el registro estaba simulado.
+> se registra es un **canario** con formato reconocible (`POC-CANARY-…`), no una credencial real. Es
+> el espejo funcional de la PoC pensada para Pacífico.
 
 ## Lo que este repo demuestra
 
-Que el secreto llega al Key Vault y **nadie puede verlo por el camino** — ni siquiera el propio
-pipeline que lo creó. La identidad de GitHub tiene un rol con **una sola acción**, `setSecret`, así
-que el último paso del registro es este:
+Que el secreto llega al Key Vault y **nadie puede verlo por el camino** — ni siquiera el pipeline que
+lo creó. La identidad de GitHub tiene un rol a medida con **dos acciones**, `setSecret` y `readMetadata`
+(escribe y ve nombres, nunca valores), así que después de escribir, el registro comprueba esto:
 
 ```
-Registrado: ms-cobranzas-sonarqube-token en kv-poc-secretos-78e549.
-Azure denegó la lectura, como corresponde:
-ERROR: (Forbidden) Caller is not authorized to perform action on resource.
+Creado poc-multikv-std02-token en azkvpoclabeu2d01 (versión 1a5f…).
+Azure negó la relectura (403), como corresponde.
 ```
 
-Ese `Forbidden` no es una demo: si algún día alguien le asigna un rol más permisivo a la identidad,
-ese step falla y el registro se cae. Es un control permanente.
+Ese `403` no es una demo: si algún día alguien le asigna un rol más permisivo a la identidad, ese paso
+falla y la corrida queda marcada con una **alerta de permisos**. Es un control permanente.
 
 ## Cómo registrar un secreto
 
-**1.** Abrí un issue con la plantilla *Solicitud de registro de secreto*: nombre, Key Vault, **de
-dónde viene el valor** y para qué lo necesita. **Nunca el valor.**
+Todo ocurre en **un único issue**; nadie usa terminal ni el portal de Azure.
 
-**2.** El workflow valida la solicitud. Si algo está mal, comenta el motivo y cierra el issue: para
-corregir se abre otro, editar el existente no lo reprocesa.
+**1. Pedido.** Abrís un issue con la plantilla *registro de secreto*: nombre del secreto, **Key
+Vault** (uno o varios, uno por línea) y justificación. **Nunca el valor.**
 
-**3.** Seguridad aprueba en el environment `registro-secretos`. Antes de generar nada, el workflow
-verifica que el issue no haya cambiado desde que se validó.
+**2. Validación.** `github[bot]` revisa el pedido (autor habilitado, sin valores pegados, nombre
+válido, nomenclatura del KV) y hace un **chequeo previo en Azure** por cada KV: que exista, que el
+runner llegue y que el nombre esté libre. Si algo falla, comenta el motivo y el issue queda abierto
+para corregirlo editando.
 
-**4.** Según lo declarado en el paso 1:
+**3. El valor.** Con la validación en verde, quien recibió el valor lo carga **una sola vez** como
+**secret de GitHub** con el nombre que indica el bot (`VALOR_ISSUE_<n>`) y comenta `/cargado`.
 
-- **Lo genera un sistema** → `github[bot]` lo escribe en el Key Vault, comenta quién aprobó y cierra
-  el issue con el label `registrado`. Nadie ve el valor.
-- **Lo entrega un proveedor** → el workflow no lo pide ni lo recibe: comenta que ya está aprobado,
-  pone el label `pendiente-carga` y deja el issue abierto. Quien tiene el valor lo carga en el portal
-  con el permiso de solo escritura.
+**4. Aprobación.** Recién ahí nace la corrida que espera la aprobación. Un analista de Seguridad
+aprueba en el environment (`registro-secretos`, o `registro-secretos-prod` si es producción). Antes de
+escribir, el workflow relee el issue y aborta si cambió desde que se validó.
 
-**5.** El workflow de conciliación compara la bóveda contra los pedidos aprobados: cierra los que ya
-se cargaron y **avisa si aparece un secreto sin pedido detrás**.
+**5. Escritura atómica.** `github[bot]` escribe el mismo valor en **todos los KV** de la lista, con una
+garantía de transacción: **pre-chequea todos antes de escribir; si uno solo falla, no escribe en
+ninguno**. En cada KV comprueba que no puede releer el secreto (el `403`).
+
+**6. Limpieza y cierre.** Salga como salga, borra el secret de GitHub `VALOR_ISSUE_<n>` con una
+**GitHub App** y cierra el issue con una **tabla por KV** y el label del desenlace.
+
+Dos controles corren solos: un **barrido** cada hora borra secrets de GitHub sueltos y cancela esperas
+de más de 24 h, y una **conciliación** diaria compara los KV contra los pedidos registrados (solo
+nombres y etiquetas) y avisa si aparece un secreto sin pedido detrás.
+
+### Un secreto en varios KV
+
+El campo Key Vault admite **varios KV, uno por línea, todos del mismo ambiente** (misma letra `d`/`c`/`p`):
+un mismo valor se registra en todos bajo **una sola aprobación**. Si la lista mezcla ambientes, el
+pedido se rechaza (cruzar cert/prod son pedidos separados). La escritura es atómica: nada queda a
+medias.
 
 ## Montar el entorno
 
-Todo lo de Azure está en [`infra/bootstrap.sh`](infra/bootstrap.sh), que es idempotente y se puede
-volver a correr sin romper nada:
+Todo lo de Azure está en [`infra/bootstrap.sh`](infra/bootstrap.sh), idempotente:
 
 ```bash
 az login
 bash infra/bootstrap.sh
 ```
 
-Crea dos recursos — el Key Vault y una identidad administrada — más la credencial federada, un rol a
-medida y sus asignaciones. Al terminar imprime los identificadores que hay que cargar en GitHub.
+Crea el grupo de recursos, las **dos identidades** (registro y conciliación) con sus credenciales
+federadas, los **dos roles a medida** y sus asignaciones, y las bóvedas de prueba con la nomenclatura
+de la empresa (`azkvpoclabeu2d01`/`d04` escritura normal, `d02` sin rol de escritura, `d03` lectura de
+más, `p01` producción). Al terminar imprime los identificadores para GitHub.
 
 Del lado de GitHub hace falta:
 
 | Qué | Dónde |
 |---|---|
-| Secrets de Azure en **dos** environments: `registro-secretos` y `conciliacion` | Settings › Environments › Environment secrets |
-| Labels `registro-secreto`, `registrado` y `pendiente-carga` | Issues › Labels |
-| Environment `registro-secretos` **con revisor obligatorio**, limitado a `main` | Settings › Environments |
-| Environment `conciliacion` **sin revisores**, limitado a `main` | Settings › Environments |
+| **4 environments:** `registro-secretos` y `registro-secretos-prod` (con revisor de Seguridad), `conciliacion` (sin revisores), `github-app` (sin revisores) | Settings › Environments |
+| Secrets de Azure (`AZURE_CLIENT_ID`/`TENANT_ID`/`SUBSCRIPTION_ID`) en los environments que entran a Azure | Environment secrets (repo público) |
+| Llave privada de la **GitHub App** como secret del environment `github-app`; su `APP_CLIENT_ID` como variable | Settings › Environments › `github-app` |
+| Variables `ALLOWED_REQUESTERS`, `SECURITY_TEAM`, `FLOW_START` | Settings › Variables |
+| Labels: `registro-secreto`, `con-errores`, `registrado`, `rechazado`, `fallido`, `alerta-permisos`, `alerta-parcial`, `alerta-conciliacion` | Issues › Labels |
 
-Son dos environments porque son dos identidades con permisos distintos: la de registro **escribe** y
-espera aprobación; la de conciliación **solo lista nombres** y corre sola. Si compartieran identidad,
-la conciliación podría escribir sin que nadie apruebe.
-
-Los tres valores son **identificadores, no credenciales**: sin un token firmado por GitHub para este
-repo y este environment, no abren nada. Van como secrets del environment por dos razones concretas:
-este repo es **público**, así que de otro modo quedarían en claro en los logs, y atados al environment
-solo los ve el job que ya pasó por la aprobación. En un repo privado corresponden **variables de
-environment**, que se leen igual pero son visibles para diagnosticar.
+Son **cuatro environments porque son cuatro puertas**: registro (escribe, espera aprobación),
+producción (escribe, aprobación estricta), conciliación (solo lista nombres, corre sola) y la App
+(guarda su llave). Los datos de Azure son **identificadores, no credenciales**: sin un token firmado
+por GitHub para este repo y environment no abren nada. En repo público van como secrets del environment
+para que no queden en claro en los logs.
 
 ## Estado
 
@@ -83,24 +96,23 @@ environment**, que se leen igual pero son visibles para diagnosticar.
 |---|---|
 | Login OIDC sin secretos guardados | funciona |
 | Registro real en Key Vault | funciona |
-| El pipeline no puede releer lo que escribe | verificado (`Forbidden`) |
+| El pipeline no puede releer lo que escribe | verificado (`403`) |
+| Un valor en **varios KV**, escritura **atómica** | verificado (STD-02/03) |
 | El valor no aparece en logs ni en el issue | verificado, 0 apariciones |
-| Pausa para que Seguridad apruebe | funciona (el repo es público: en privado requiere Enterprise) |
-| Bifurcación según el origen del valor | funciona |
-| Conciliación de la bóveda | funciona |
-| Carga a mano por un grupo de custodios | **pendiente** — el tenant de la universidad no permite crear grupos |
+| Pausa para que Seguridad apruebe | funciona (repo público; en privado requiere Enterprise) |
+| Borrado del secret de GitHub con la App + barrido | funciona |
+| Conciliación de la bóveda (consciente de la lista) | funciona |
 
 ## Límites
 
-- Solo secretos que un sistema puede generar por API. Los que entrega una persona o un proveedor sin
-  API quedan fuera de alcance.
-- Cuando el valor lo carga una persona, la aprobación **no se puede forzar técnicamente**: se detecta
-  después, con la conciliación. Cuando lo escribe `github[bot]`, sí es imposible de saltear.
-- Los Key Vault autorizados son una lista dentro de `.github/scripts/validar-solicitud.js`. El
-  formulario no los muestra: si se pide uno que no está, la solicitud se rechaza indicando el motivo.
-  Esa lista es el control real, porque el issue se puede editar después de abrirlo.
-- El ambiente no se pide: se desprende del nombre del Key Vault.
-- **Los secretos se registran sin fecha de vencimiento**, siguiendo la práctica actual de la
-  compañía. Es una decisión tomada, no un olvido: el flujo soporta ponerla con una línea
-  (`--expires`), y conviene revisarla cuando se defina una política de rotación.
-- El alcance es el **registro**. Que las aplicaciones lean el secreto es otra fase.
+- **Un solo carril:** siempre hay una persona que carga el valor y lo conoce. El flujo no genera
+  valores; su alcance es el **registro**, no la generación.
+- **Un secreto en varios KV** solo si son del **mismo ambiente** (misma letra). Cruzar ambientes son
+  pedidos separados.
+- La **atomicidad** es por pre-chequeo, no por rollback: una carrera rarísima entre el pre-chequeo y la
+  escritura puede dejar un estado parcial, que se marca con alerta para revisión manual.
+- Las bóvedas se validan por su **nomenclatura** `azkv<código>eu2<d|c|p><nn>`; el ambiente sale de la
+  letra. El formulario no las lista.
+- **Sin fecha de vencimiento**, siguiendo la práctica actual de la compañía. Activarlo es una línea
+  (`--expires`) el día que exista una política de rotación.
+- Que las aplicaciones **lean** el secreto es otra fase.
