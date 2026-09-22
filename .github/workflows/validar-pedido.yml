@@ -29,7 +29,7 @@ jobs:
     outputs:
       ok: ${{ steps.check.outputs.ok }}
       name: ${{ steps.check.outputs.name }}
-      vault: ${{ steps.check.outputs.vault }}
+      vaults: ${{ steps.check.outputs.vaults }}
       environment: ${{ steps.check.outputs.environment }}
     steps:
       # Acciones ancladas a SHA: una etiqueta se puede reapuntar a otro código.
@@ -72,32 +72,37 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Revisar el KV y el nombre del secreto
+      - name: Revisar cada KV y el nombre del secreto
         id: look
         env:
-          VAULT: ${{ needs.validate.outputs.vault }}
+          VAULTS: ${{ needs.validate.outputs.vaults }}
           SECRET_NAME: ${{ needs.validate.outputs.name }}
         run: |
           set -uo pipefail
           error_file="$(mktemp)"
-          problem=""
-          if names="$(az keyvault secret list --vault-name "$VAULT" --query "[].name" --output tsv 2>"$error_file")"; then
-              if grep -qxF "$SECRET_NAME" <<<"$names"; then problem="nombre-existe"; fi
-          else
-              head -5 "$error_file"
-              if grep -qiE 'ForbiddenByFirewall|Client address' "$error_file"; then problem="red-cerrada"
-              elif grep -qiE 'Forbidden|does not have' "$error_file"; then problem="sin-permiso"
-              elif grep -qiE 'VaultNotFound|not found|resolve|getaddrinfo|Name or service' "$error_file"; then problem="no-existe"
-              else problem="otro"
+          trap 'rm -f "$error_file"' EXIT
+          mapfile -t vaults < <(jq -r '.[]' <<<"$VAULTS")
+          problems='[]'
+          for vault in "${vaults[@]}"; do
+              problem=""
+              if names="$(az keyvault secret list --vault-name "$vault" --query "[].name" --output tsv 2>"$error_file")"; then
+                  if grep -qxF "$SECRET_NAME" <<<"$names"; then problem="nombre-existe"; fi
+              else
+                  head -5 "$error_file" >&2
+                  if grep -qiE 'ForbiddenByFirewall|Client address' "$error_file"; then problem="red-cerrada"
+                  elif grep -qiE 'Forbidden|does not have' "$error_file"; then problem="sin-permiso"
+                  elif grep -qiE 'VaultNotFound|not found|resolve|getaddrinfo|Name or service' "$error_file"; then problem="no-existe"
+                  else problem="otro"
+                  fi
               fi
-          fi
-          echo "problem=$problem" >> "$GITHUB_OUTPUT"
+              problems="$(jq -c --arg v "$vault" --arg p "$problem" '. + [{vault:$v, problem:$p}]' <<<"$problems")"
+          done
+          echo "problems=$problems" >> "$GITHUB_OUTPUT"
 
       - name: Contarlo en el issue
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8
         env:
-          PROBLEM: ${{ steps.look.outputs.problem }}
-          VAULT: ${{ needs.validate.outputs.vault }}
+          PROBLEMS: ${{ steps.look.outputs.problems }}
           SECRET_NAME: ${{ needs.validate.outputs.name }}
           ENVIRONMENT: ${{ needs.validate.outputs.environment }}
           SECURITY_TEAM: ${{ vars.SECURITY_TEAM }}

@@ -14,7 +14,8 @@ async function registeredRequests({ github, context, core }) {
     const requests = issues.filter((issue) => !issue.pull_request)
         .map((issue) => ({ number: issue.number, ...readRequest(issue.body || '') }));
     core.setOutput('requests', JSON.stringify(requests));
-    core.setOutput('vaults', [...new Set(requests.map((request) => request.vault))].join(' '));
+    // Un pedido puede tener varios KV: se aplanan y deduplican para el loop del inventario.
+    core.setOutput('vaults', [...new Set(requests.flatMap((request) => request.vaults))].join(' '));
 }
 
 // Paso 3: las tres preguntas, con lo que listó Azure en el paso 2.
@@ -28,8 +29,8 @@ async function compare({ github, context, core }) {
         if (!listing.ok) { findings.push(`- KV \`${vault}\`: **no se pudo revisar** (red cerrada o sin permiso).`); continue; }
         const byName = new Map(listing.secrets.map((secret) => [secret.name, secret]));
 
-        // 1 · Lo que registró el flujo, ¿sigue en el KV?
-        for (const request of requests.filter((candidate) => candidate.vault === vault)) {
+        // 1 · Lo que registró el flujo, ¿sigue en el KV? Un pedido puede listar este KV entre varios.
+        for (const request of requests.filter((candidate) => candidate.vaults.includes(vault))) {
             const secret = byName.get(request.name);
             if (!secret) findings.push(`- #${request.number}: el secreto \`${request.name}\` **ya no está** en el KV \`${vault}\`: alguien lo borró desde el portal.`);
             // 3 · ¿Alguien lo pisó? La última versión sin la etiqueta del flujo la escribió otro.

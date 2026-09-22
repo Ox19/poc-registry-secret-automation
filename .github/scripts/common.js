@@ -8,6 +8,7 @@ const LABELS = {
     rejected: 'rechazado',
     failed: 'fallido',
     permissionAlert: 'alerta-permisos',
+    partialAlert: 'alerta-parcial',
     reconciliationAlert: 'alerta-conciliacion',
 };
 
@@ -41,10 +42,13 @@ function readField(body, label) {
     return value === '_No response_' ? '' : value;
 }
 
+// El campo "Key Vault" admite varios KV, uno por línea: un mismo valor puede ir a varios KV.
 function readRequest(body) {
+    const vaults = [...new Set(readField(body, 'Key Vault')
+        .split('\n').map((line) => line.trim()).filter(Boolean))];
     return {
         name: readField(body, 'Nombre del secreto'),
-        vault: readField(body, 'Key Vault'),
+        vaults,
         justification: readField(body, 'Justificación'),
     };
 }
@@ -52,6 +56,21 @@ function readRequest(body) {
 function vaultEnvironment(vault) {
     const match = vault.match(VAULT_PATTERN);
     return match ? ENVIRONMENTS[match[1]] : null;
+}
+
+// Tope defensivo de KV por pedido.
+const MAX_VAULTS = 10;
+
+// Ambiente común de una lista de KV. Exige que TODOS sean de la misma letra (d/c/p): una lista mezclada
+// no tiene una sola puerta de aprobación. Devuelve { environment, error }.
+function requestEnvironment(vaults) {
+    if (!vaults.length) return { environment: null, error: 'Falta el Key Vault: indicá al menos uno.' };
+    if (vaults.length > MAX_VAULTS) return { environment: null, error: `Demasiados KV (${vaults.length}): el máximo por pedido es ${MAX_VAULTS}.` };
+    const invalid = vaults.filter((vault) => !vaultEnvironment(vault));
+    if (invalid.length) return { environment: null, error: `Estos KV no respetan la nomenclatura \`azkv<código>eu2<d|c|p><nn>\`: ${invalid.map((vault) => `\`${vault}\``).join(', ')}.` };
+    const labels = [...new Set(vaults.map((vault) => vaultEnvironment(vault).label))];
+    if (labels.length > 1) return { environment: null, error: `Todos los KV deben ser del mismo ambiente; hay de: ${labels.join(', ')}. Abrí un pedido por ambiente.` };
+    return { environment: vaultEnvironment(vaults[0]), error: null };
 }
 
 // Un solo comentario del bot por pedido, armado por etapas: cada workflow reemplaza la suya y deja las demás.
@@ -100,7 +119,7 @@ async function removeLabel(github, context, name) {
 }
 
 module.exports = {
-    LABELS, VAULT_PATTERN, SECRET_NAME_PATTERN, SECRET_NAME_MAX,
+    LABELS, VAULT_PATTERN, SECRET_NAME_PATTERN, SECRET_NAME_MAX, MAX_VAULTS,
     githubSecretName, issueRef, repoUrl, runUrl, loginList, mentions,
-    readField, readRequest, vaultEnvironment, updateStages, removeLabel, waitingRegisterRuns,
+    readField, readRequest, vaultEnvironment, requestEnvironment, updateStages, removeLabel, waitingRegisterRuns,
 };

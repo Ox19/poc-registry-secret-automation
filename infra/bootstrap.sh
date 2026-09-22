@@ -21,6 +21,7 @@ VAULT_DEV="azkvpoclabeu2d01"
 VAULT_PROD="azkvpoclabeu2p01"
 VAULT_NO_WRITER="azkvpoclabeu2d02"    # prueba de falla: el pipeline no tiene rol de escritura
 VAULT_OVER_GRANTED="azkvpoclabeu2d03" # prueba de alerta: el pipeline puede leer, a propósito
+VAULT_DEV_2="azkvpoclabeu2d04"        # segundo KV de dev limpio: prueba de un mismo valor en varios KV
 
 SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
 CURRENT_USER_ID="$(az ad signed-in-user show --query id --output tsv)"
@@ -142,7 +143,7 @@ az identity federated-credential create \
     --audiences "api://AzureADTokenExchange" \
     --output none
 
-for vault in "$VAULT_DEV" "$VAULT_PROD" "$VAULT_NO_WRITER" "$VAULT_OVER_GRANTED"; do
+for vault in "$VAULT_DEV" "$VAULT_DEV_2" "$VAULT_PROD" "$VAULT_NO_WRITER" "$VAULT_OVER_GRANTED"; do
     if ! az keyvault show --name "$vault" --output none 2>/dev/null; then
         az keyvault create \
             --name "$vault" \

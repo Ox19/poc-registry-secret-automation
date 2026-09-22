@@ -5,7 +5,7 @@
 const crypto = require('node:crypto');
 const {
     LABELS, SECRET_NAME_PATTERN, SECRET_NAME_MAX, githubSecretName, issueRef, repoUrl, loginList, mentions,
-    readRequest, vaultEnvironment, updateStages, removeLabel, waitingRegisterRuns,
+    readRequest, requestEnvironment, updateStages, removeLabel, waitingRegisterRuns,
 } = require('./common');
 
 // Guardarraíl: el valor de un secreto pegado en el texto por error.
@@ -21,7 +21,7 @@ const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 
 function validate(body, people, allowed) {
     const request = readRequest(body);
-    const environment = vaultEnvironment(request.vault);
+    const { environment, error: vaultError } = requestEnvironment(request.vaults);
     const allowedLower = allowed.map((login) => login.toLowerCase());
     const errors = [];
 
@@ -31,9 +31,7 @@ function validate(body, people, allowed) {
     if (!SECRET_NAME_PATTERN.test(request.name) || request.name.length > SECRET_NAME_MAX) {
         errors.push(`El nombre del secreto \`${request.name}\` no es válido: solo minúsculas, números y guiones, hasta ${SECRET_NAME_MAX} caracteres.`);
     }
-    if (!environment) {
-        errors.push(`El nombre del KV \`${request.vault}\` no respeta la nomenclatura \`azkv<código>eu2<d|c|p><nn>\`.`);
-    }
+    if (vaultError) errors.push(vaultError);
     if (!request.justification) errors.push('Falta la justificación.');
 
     const leak = LEAK_PATTERNS.find(([pattern]) => pattern.test(body));
@@ -42,8 +40,10 @@ function validate(body, people, allowed) {
 
 function summary(request, environment) {
     const ambient = environment.label === 'producción' ? '**producción** ⚠️' : environment.label;
+    const vaults = request.vaults.map((vault) => `\`${vault}\``).join('<br>');
+    const kvLabel = request.vaults.length > 1 ? `KV (${request.vaults.length})` : 'KV';
     return ['| Campo | Valor |', '|---|---|',
-        `| Nombre del secreto | \`${request.name}\` |`, `| KV | \`${request.vault}\` |`,
+        `| Nombre del secreto | \`${request.name}\` |`, `| ${kvLabel} | ${vaults} |`,
         `| Ambiente | ${ambient} |`, `| Justificación | ${request.justification.replace(/\n+/g, ' ')} |`].join('\n');
 }
 
@@ -90,7 +90,7 @@ async function check({ github, context, core }) {
         validacion: ['### ✅ Pedido válido', '', summary(result.request, result.environment), ...editNote].join('\n') });
     core.setOutput('ok', 'true');
     core.setOutput('name', result.request.name);
-    core.setOutput('vault', result.request.vault);
+    core.setOutput('vaults', JSON.stringify(result.request.vaults));
     core.setOutput('environment', result.environment.label);
 }
 
@@ -102,20 +102,24 @@ const PRECHECK_PROBLEMS = {
     otro: 'Azure respondió un error inesperado (ver el log de la corrida)',
 };
 
-// Después del chequeo previo en Azure: si pasó, indica cómo cargar el valor y avisa a Seguridad.
+// Después del chequeo previo en Azure (uno por KV): si todos pasaron, indica cómo cargar el valor.
 async function reportPrecheck({ github, context, core }) {
-    const { PROBLEM, VAULT, SECRET_NAME, ENVIRONMENT } = process.env;
+    const { PROBLEMS, SECRET_NAME, ENVIRONMENT } = process.env;
+    const problems = JSON.parse(PROBLEMS || '[]');
+    const bad = problems.filter((entry) => entry.problem);
     core.setOutput('ok', 'false');
-    if (PROBLEM) {
+    if (bad.length) {
         await updateStages(github, context, { chequeo: ['### ❌ Chequeo previo en Azure', '',
-            `No se puede seguir: ${PRECHECK_PROBLEMS[PROBLEM] || PRECHECK_PROBLEMS.otro}.`, '',
+            'No se puede seguir. Por KV:', '',
+            ...bad.map((entry) => `- \`${entry.vault}\`: ${PRECHECK_PROBLEMS[entry.problem] || PRECHECK_PROBLEMS.otro}`), '',
             'Editá el issue para corregirlo: el bot lo vuelve a revisar solo.'].join('\n') });
         await github.rest.issues.addLabels({ ...issueRef(context), labels: [LABELS.errors] });
         return;
     }
     const valueName = githubSecretName(context.issue.number);
+    const vaults = problems.map((entry) => `\`${entry.vault}\``).join(', ');
     await updateStages(github, context, { chequeo: ['### ✅ Chequeo previo en Azure', '',
-        `El KV \`${VAULT}\` existe, el runner llega y el nombre del secreto \`${SECRET_NAME}\` está libre en ese KV.`, '',
+        `Los KV ${vaults} existen, el runner llega y el nombre del secreto \`${SECRET_NAME}\` está libre en cada uno.`, '',
         '### Siguiente paso: cargar el valor', '',
         `1. Quien recibió el valor lo carga como **secret de GitHub** con el nombre **\`${valueName}\`** en`,
         `   [Settings → Secrets and variables → Actions → New repository secret](${repoUrl(context)}/settings/secrets/actions/new).`,
@@ -165,7 +169,7 @@ async function recheck({ github, context, core }) {
     const approver = reviews.find((review) => review.state === 'approved')?.user.login || 'desconocido';
     const request = readRequest(issue.body || '');
     core.setOutput('name', request.name);
-    core.setOutput('vault', request.vault);
+    core.setOutput('vaults', JSON.stringify(request.vaults));
     core.setOutput('approver', approver);
 }
 
