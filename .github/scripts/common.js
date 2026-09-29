@@ -49,6 +49,7 @@ function readRequest(body) {
     return {
         name: readField(body, 'Nombre del secreto'),
         vaults,
+        description: readField(body, 'Descripción'),
         justification: readField(body, 'Justificación'),
     };
 }

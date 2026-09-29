@@ -44,7 +44,8 @@ function summary(request, environment) {
     const kvLabel = request.vaults.length > 1 ? `KV (${request.vaults.length})` : 'KV';
     return ['| Campo | Valor |', '|---|---|',
         `| Nombre del secreto | \`${request.name}\` |`, `| ${kvLabel} | ${vaults} |`,
-        `| Ambiente | ${ambient} |`, `| Justificación | ${request.justification.replace(/\n+/g, ' ')} |`].join('\n');
+        `| Ambiente | ${ambient} |`, `| Descripción | ${(request.description || '—').replace(/\n+/g, ' ')} |`,
+        `| Justificación | ${request.justification.replace(/\n+/g, ' ')} |`].join('\n');
 }
 
 // Al abrir o editar el issue. Si algo falla, el issue queda abierto para corregirlo editando.
@@ -170,6 +171,7 @@ async function recheck({ github, context, core }) {
     const request = readRequest(issue.body || '');
     core.setOutput('name', request.name);
     core.setOutput('vaults', JSON.stringify(request.vaults));
+    core.setOutput('description', request.description);
     core.setOutput('approver', approver);
 }
 
