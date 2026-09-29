@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cifrar secreto para Key Vault</title>
+<style>
+  :root { --azul:#1C75BC; --cian:#29AAE1; --verde:#2f9e44; --texto:#0A2540; --gris:#5B6472; --bg:#f2f6fa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", Calibri, Arial, sans-serif; color:var(--texto); background:#fff; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .lead { color:var(--gris); margin:0 0 28px; line-height:1.5; }
+  label { display:block; font-weight:600; margin: 20px 0 6px; }
+  .hint { color:var(--gris); font-size:13px; margin-top:4px; }
+  input, textarea { width:100%; padding:11px 12px; border:1px solid #cfd6de; border-radius:8px; font-size:15px; font-family:inherit; }
+  input:focus, textarea:focus { outline:none; border-color:var(--cian); box-shadow:0 0 0 3px rgba(41,170,225,.18); }
+  textarea { resize:vertical; min-height:90px; }
+  .row-actions { margin-top:24px; display:flex; align-items:center; gap:16px; }
+  button { border:0; border-radius:8px; padding:11px 20px; font-size:15px; font-weight:600; cursor:pointer; }
+  .primary { background:var(--azul); color:#fff; }
+  .primary:hover { background:#155a91; }
+  .ghost { background:transparent; color:var(--azul); }
+  .toggle { color:var(--azul); background:none; border:0; padding:0; font-size:13px; cursor:pointer; }
+  .card { margin-top:28px; border:1px solid #e3e9ef; border-radius:10px; overflow:hidden; }
+  .card-h { background:#eef5fb; padding:10px 14px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  .card-b { padding:14px; }
+  pre { margin:0; white-space:pre-wrap; word-break:break-all; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; color:#333; }
+  .muted { color:var(--gris); font-size:12px; margin-top:22px; line-height:1.5; }
+  .ok { color:var(--verde); font-weight:600; }
+  .err { color:#e03131; font-weight:600; }
+  a.issue { display:inline-block; margin-top:12px; color:var(--azul); font-weight:600; text-decoration:none; }
+  a.issue:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cifrar secreto para Key Vault</h1>
+  <p class="lead">El valor se cifra <strong>acá, en tu equipo</strong>. Lo que copiás al final es un
+  <strong>sobre sellado</strong>: pegalo en el issue sin riesgo, <strong>solo el Key Vault puede abrirlo</strong>.</p>
+
+  <label for="vault">Vault de destino</label>
+  <input id="vault" placeholder="azkvpoclabeu2d01" autocomplete="off">
+  <div class="hint">El nombre del vault; se valida al registrar.</div>
+
+  <label for="name">Nombre del secreto</label>
+  <input id="name" placeholder="db-password-core" autocomplete="off">
+  <div class="hint">Minúsculas, dígitos y guiones.</div>
+
+  <label for="desc">Descripción</label>
+  <input id="desc" placeholder="Token de acceso a la API de cobranzas" autocomplete="off">
+  <div class="hint">Queda como content type: la forma de saber de qué va el secreto.</div>
+
+  <label for="value">Valor del secreto</label>
+  <textarea id="value"></textarea>
+  <button type="button" class="toggle" id="toggle">Mostrar valor</button>
+
+  <div class="row-actions">
+    <button type="button" class="primary" id="seal">Cifrar datos</button>
+    <button type="button" class="ghost" id="clear">Limpiar</button>
+    <span id="status"></span>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span id="card-title">Sobre sellado</span><button type="button" class="toggle" id="copy" hidden>Copiar</button></div>
+    <div class="card-b"><pre id="out">Aún no has cifrado nada.</pre></div>
+  </div>
+  <a class="issue" id="issue" href="#" target="_blank" rel="noopener" hidden>Abrir el issue con estos datos →</a>
+
+  <p class="muted">
+    Clave de transporte: <strong id="kid">transport-2026-q3-demo</strong> · RSA-OAEP-256 envolviendo AES-256-GCM ·
+    Nada de lo que escribís sale de este navegador.
+  </p>
+</div>
+
+<script>
+"use strict";
+// Llave PÚBLICA de transporte (SPKI, base64). En la PoC es una llave DEMO; en real la provee el KV dedicado.
+const TRANSPORT_KID = "transport-2026-q3-demo";
+const TRANSPORT_PUB_SPKI_B64 = "MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAzeKV3Xuhv7uRkVE8jeldsY9ejAbB3B2vwFg/iIaLHKThwj/tcqqyOkGDybUS5fZ89NXT0mqX5XfGdRHK+ebUIUH3hwRCTuJ6fnzcElBzWFc6n3neOIEF6b1VhqQQrL4uNzCdvnCJpPz7FN8fQENiBRXuUDaJpmI5Hn3pQRAh+yG1etmmWHRuP+NnuyHzKojM0wN7jBR9+ryjlIiizwwdBCzOEZ2G2+EJvBWXI1KeNqA4PlmR/NUvlVM1Psip+R9uo4jT9RWqym5MxDTSV4UYYZ8orOvekTjyMd7IWB8Fap9sEJM4SGBh2u9B3j+3vEEfuHkkRZo0NOmWxqFQEX+58pfNCckIRCOctzLsnLea/oQb10BA1Magj+QOIg6Xx8+/bVRKnJF2Ei1GC9xj982frikolWcNwJCbPoAwpkD2MTunxzxMxL+IO5gjUpthCumxwLtAXSQ2YAiBKunyG/aPbwgzyWcVd5EFhlp0vu+EEEZBPYBdgP9DU2GmM/wtzkvLAgMBAAE=";
+const REPO = "Ox19/poc-registry-secret-automation";
+
+const $ = (id) => document.getElementById(id);
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+
+async function importPub() {
+  const der = Uint8Array.from(atob(TRANSPORT_PUB_SPKI_B64), (c) => c.charCodeAt(0));
+  return crypto.subtle.importKey("spki", der.buffer, { name: "RSA-OAEP", hash: "SHA-256" }, false, ["wrapKey"]);
+}
+
+// Cifrado de sobre: AES-256-GCM cifra el valor; la clave AES se envuelve con RSA-OAEP.
+async function seal(value) {
+  const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(value));
+  const wrapped = await crypto.subtle.wrapKey("raw", aesKey, await importPub(), { name: "RSA-OAEP" });
+  const envelope = { v: 1, alg: "RSA-OAEP-256+AES-256-GCM", kid: TRANSPORT_KID,
+    wrappedKey: b64(wrapped), iv: b64(iv), ct: b64(ct) };
+  return btoa(JSON.stringify(envelope));
+}
+
+$("toggle").addEventListener("click", () => {
+  const v = $("value");
+  if (v.tagName === "TEXTAREA") return; // textarea siempre visible; el toggle enmascara con type en inputs
+});
+
+$("clear").addEventListener("click", () => {
+  ["vault", "name", "desc", "value"].forEach((id) => ($(id).value = ""));
+  $("out").textContent = "Aún no has cifrado nada.";
+  $("status").textContent = ""; $("copy").hidden = true; $("issue").hidden = true;
+  $("card-title").textContent = "Sobre sellado";
+});
+
+$("seal").addEventListener("click", async () => {
+  const vault = $("vault").value.trim(), name = $("name").value.trim();
+  const desc = $("desc").value.trim(), value = $("value").value;
+  $("status").textContent = "";
+  if (!vault || !name || !value) { $("status").className = "err"; $("status").textContent = "Completá vault, nombre y valor."; return; }
+  try {
+    const sobre = await seal(value);
+    $("out").textContent = sobre;
+    $("card-title").textContent = "Sobre sellado · " + vault + " / " + name;
+    $("copy").hidden = false; $("value").value = ""; // el valor en claro se limpia al sellar
+    $("status").className = "ok"; $("status").textContent = "Cifrado ✓";
+    const params = new URLSearchParams({ template: "registro-secreto.yml", title: "[Secreto] " + name,
+      name, vault, description: desc, justification: "Sobre sellado:\n" + sobre });
+    const issue = $("issue");
+    issue.href = "https://github.com/" + REPO + "/issues/new?" + params.toString();
+    issue.hidden = false;
+  } catch (e) {
+    $("status").className = "err"; $("status").textContent = "Error al cifrar: " + e.message;
+  }
+});
+
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("out").textContent); $("copy").textContent = "Copiado"; }
+  catch { $("copy").textContent = "No se pudo copiar"; }
+});
+</script>
+</body>
+</html>
