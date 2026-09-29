@@ -1,0 +1,54 @@
+# Prototipo del punto 1 de la revisión (PL): la solicitud entra por workflow_dispatch con inputs TIPADOS,
+# en vez de parsear el body de un issue. Valida los inputs y crea un issue SOLO para auditoría.
+# Ojo: GitHub solo dispara workflow_dispatch si el archivo está en la rama por defecto (limitación a notar).
+name: "Registrar (workflow_dispatch)"
+run-name: "Dispatch — ${{ inputs.name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: "Nombre del secreto (minúsculas, números y guiones)"
+        required: true
+        type: string
+      vaults:
+        description: "Key Vault(s): uno por línea o separados por coma; todos del mismo ambiente"
+        required: true
+        type: string
+      description:
+        description: "Descripción del secreto (queda como content type)"
+        required: true
+        type: string
+      justification:
+        description: "Justificación: para qué hace falta y qué servicio lo usa"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  validar:
+    name: Validar inputs y auditar
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read   # checkout de los scripts
+      issues: write    # crear el issue de auditoría
+    steps:
+      # Acciones ancladas a SHA: una etiqueta se puede reapuntar a otro código.
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+
+      # Los inputs llegan por env, nunca interpolados en run: (regla del flujo).
+      - name: Validar y crear auditoría
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8
+        env:
+          NAME: ${{ inputs.name }}
+          VAULTS_RAW: ${{ inputs.vaults }}
+          DESCRIPTION: ${{ inputs.description }}
+          JUSTIFICATION: ${{ inputs.justification }}
+          ACTOR: ${{ github.actor }}
+        with:
+          script: await require('./.github/scripts/validar-dispatch.js')({ github, context, core })
